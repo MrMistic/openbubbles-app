@@ -15645,6 +15645,7 @@ const _: fn() = || {
             let _: Option<String> = mode;
             let _: bool = allowed;
         }
+        _ => {} // FocusSyncChanged is intercepted in api.rs before reaching bridge
     }
     {
         let StatusKitPersonalConfig = None::<crate::api::api::StatusKitPersonalConfig>.unwrap();
