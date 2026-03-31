@@ -3199,6 +3199,13 @@ class RustPushService extends GetxService {
     }
     if (push is api.PushMessage_StatusUpdate) {
       var status = push.field0;
+      // Cross-device Focus sync from our other Apple devices
+      if (status.user == '__self_focus_sync__') {
+        final hasActiveFocus = !status.allowed; // allowed=true means no active Focus
+        Logger.info('Focus sync from Apple devices: active=$hasActiveFocus modes=${status.mode}');
+        await mcs.invokeMethod('set-dnd-mode', {'enabled': hasActiveFocus});
+        return;
+      }
       final result = (await Chat.findByRust(api.ConversationData(participants: [status.user]), "iMessage", soft: true));
       if (result == null) return;
       result.notifsSilenced = !status.allowed;

@@ -1381,6 +1381,9 @@ pub enum DartStatusKitMessage {
         user: String,
         mode: Option<String>,
         allowed: bool,
+    },
+    FocusSyncChanged {
+        active_modes: Vec<String>,
     }
 }
 
