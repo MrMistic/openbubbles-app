@@ -113,8 +113,6 @@ class SetDndMode: MethodCallHandlerImpl() {
                 Log.w("OpenBubbles", "Failed to disable Focus Status rule: ${e.message}")
             }
         }
-        // Also clear the implicit app-managed DND
-        nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
     }
 
     private fun hasWriteSecureSettings(context: Context): Boolean {
