@@ -1587,11 +1587,14 @@ pub async fn request_handles(status: &Arc<StatusKitClient<DefaultAnisetteProvide
 
 pub async fn set_status(status: &Arc<StatusKitClient<DefaultAnisetteProvider>>, new_status: Option<String>) -> anyhow::Result<()> {
     let focus_active = new_status.is_some();
-    status.share_status(&StatusKitStatus {
+    // Publish to contacts (requires channel auth token)
+    if let Err(e) = status.share_status(&StatusKitStatus {
         active: new_status.is_none(),
         id: new_status,
-    }).await?;
-    // Direction A: also broadcast Focus state to own Apple devices
+    }).await {
+        warn!("Failed to share status with contacts: {e}");
+    }
+    // Direction A: broadcast Focus state to own Apple devices (uses IDS, no channel auth needed)
     if let Err(e) = status.send_personal_status(focus_active).await {
         warn!("Failed to send personal Focus status: {e}");
     }
