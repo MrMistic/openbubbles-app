@@ -5505,7 +5505,6 @@ class SharedICloudServices {
   final SyncManagerDefaultAnisetteProviderMyFilePackager? sharedstreams;
   final ArcCloudMessagesClientDefaultAnisetteProvider? cloudMessagesClient;
   final ArcStatusKitClientDefaultAnisetteProvider statuskitClient;
-  final ArcNotesClientDefaultAnisetteProvider? notes;
 
   const SharedICloudServices({
     required this.account,
@@ -5518,7 +5517,6 @@ class SharedICloudServices {
     this.sharedstreams,
     this.cloudMessagesClient,
     required this.statuskitClient,
-    this.notes,
   });
 
   @override
@@ -5532,8 +5530,7 @@ class SharedICloudServices {
       fmfd.hashCode ^
       sharedstreams.hashCode ^
       cloudMessagesClient.hashCode ^
-      statuskitClient.hashCode ^
-      notes.hashCode;
+      statuskitClient.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -5549,8 +5546,7 @@ class SharedICloudServices {
           fmfd == other.fmfd &&
           sharedstreams == other.sharedstreams &&
           cloudMessagesClient == other.cloudMessagesClient &&
-          statuskitClient == other.statuskitClient &&
-          notes == other.notes;
+          statuskitClient == other.statuskitClient;
 }
 
 class SharedPoster {
@@ -6206,129 +6202,3 @@ class WifiPassword {
           svce == other.svce &&
           data == other.data;
 }
-
-// Notes types
-
-class DartNoteFolder {
-  final String id;
-  final String title;
-
-  const DartNoteFolder({
-    required this.id,
-    required this.title,
-  });
-
-  @override
-  int get hashCode => id.hashCode ^ title.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartNoteFolder &&
-          runtimeType == other.runtimeType &&
-          id == other.id &&
-          title == other.title;
-}
-
-class DartNoteEntry {
-  final String id;
-  final String folderId;
-  final String title;
-  final String snippet;
-  final PlatformInt64 modified;
-
-  const DartNoteEntry({
-    required this.id,
-    required this.folderId,
-    required this.title,
-    required this.snippet,
-    required this.modified,
-  });
-
-  @override
-  int get hashCode =>
-      id.hashCode ^
-      folderId.hashCode ^
-      title.hashCode ^
-      snippet.hashCode ^
-      modified.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartNoteEntry &&
-          runtimeType == other.runtimeType &&
-          id == other.id &&
-          folderId == other.folderId &&
-          title == other.title &&
-          snippet == other.snippet &&
-          modified == other.modified;
-}
-
-enum DartNoteStyleType {
-  defaultStyle,
-  bold,
-  italic,
-  title,
-  heading,
-  monospace,
-  checklist,
-  bulletedList,
-  dashedList,
-  numberedList,
-}
-
-class DartFormattingRun {
-  final int length;
-  final DartNoteStyleType style;
-
-  const DartFormattingRun({
-    required this.length,
-    required this.style,
-  });
-
-  @override
-  int get hashCode => length.hashCode ^ style.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartFormattingRun &&
-          runtimeType == other.runtimeType &&
-          length == other.length &&
-          style == other.style;
-}
-
-class DartParsedNote {
-  final String title;
-  final String body;
-  final List<DartFormattingRun> formatting;
-
-  const DartParsedNote({
-    required this.title,
-    required this.body,
-    required this.formatting,
-  });
-
-  @override
-  int get hashCode =>
-      title.hashCode ^ body.hashCode ^ formatting.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartParsedNote &&
-          runtimeType == other.runtimeType &&
-          title == other.title &&
-          body == other.body &&
-          formatting == other.formatting;
-}
-
-// Notes function wrappers
-
-Future<(Uint8List?, List<DartNoteFolder>, List<DartNoteEntry>)> syncNotes(
-        {required ArcNotesClientDefaultAnisetteProvider notes,
-        Uint8List? continuationToken}) =>
-    RustLib.instance.api.crateApiApiSyncNotes(
-        notes: notes, continuationToken: continuationToken);
-
