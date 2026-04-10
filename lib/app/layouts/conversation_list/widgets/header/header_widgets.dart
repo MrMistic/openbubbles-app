@@ -4,6 +4,7 @@ import 'package:bluebubbles/app/layouts/conversation_list/pages/search/search_vi
 import 'package:bluebubbles/app/layouts/conversation_view/pages/conversation_view.dart';
 import 'package:bluebubbles/app/layouts/findmy/findmy_page.dart';
 import 'package:bluebubbles/app/layouts/facetime/facetime.dart';
+import 'package:bluebubbles/app/layouts/notes/notes_page.dart';
 import 'package:bluebubbles/app/layouts/settings/pages/misc/shared_streams_panel.dart';
 import 'package:bluebubbles/app/layouts/settings/pages/passwords/passwords_panel.dart';
 import 'package:bluebubbles/app/layouts/settings/pages/profile/profile_panel.dart';
@@ -132,6 +133,8 @@ class MaterialOverflowMenu extends StatelessWidget {
           goToFaceTime(context);
         } else if (value == 11) {
           goToPasswords(context);
+        } else if (value == 12) {
+          goToNotes(context);
         }
       },
       itemBuilder: (context) {
@@ -196,6 +199,14 @@ class MaterialOverflowMenu extends StatelessWidget {
               style: context.textTheme.bodyLarge!.apply(color: context.theme.colorScheme.properOnSurface),
             ),
           ),
+          if (pushService.state?.icloudServices?.notes != null)
+            PopupMenuItem(
+              value: 12,
+              child: Text(
+                'Notes',
+                style: context.textTheme.bodyLarge!.apply(color: context.theme.colorScheme.properOnSurface),
+              ),
+            ),
           PopupMenuItem(
             value: 2,
             child: Text(
@@ -340,6 +351,12 @@ class CupertinoOverflowMenu extends StatelessWidget {
           icon: Icons.key,
           onTap: () => goToPasswords(context),
         ),
+        if (pushService.state?.icloudServices?.notes != null)
+        PullDownMenuItem(
+          title: 'Notes',
+          icon: Icons.note_outlined,
+          onTap: () => goToNotes(context),
+        ),
         if (extraItems)
           PullDownMenuItem(
             title: 'Search',
@@ -443,6 +460,33 @@ Future<void> goToPasswords(BuildContext context) async {
     ThemeSwitcher.buildPageRoute(
       builder: (BuildContext context) {
         return const PasswordsPanel();
+      },
+    ),
+  );
+  if (currentChat != null) {
+    await cm.setActiveChat(currentChat);
+    if (ss.settings.tabletMode.value) {
+      ns.pushAndRemoveUntil(
+        context,
+        ConversationView(
+          chat: currentChat,
+        ),
+            (route) => route.isFirst,
+      );
+    } else {
+      cvc(currentChat).close();
+    }
+  }
+}
+
+Future<void> goToNotes(BuildContext context) async {
+  final currentChat = cm.activeChat?.chat;
+  ns.closeAllConversationView(context);
+  await cm.setAllInactive();
+  await Navigator.of(Get.context!).push(
+    ThemeSwitcher.buildPageRoute(
+      builder: (BuildContext context) {
+        return const NotesPage();
       },
     ),
   );

@@ -34,6 +34,10 @@ abstract class ArcFindMyClientDefaultAnisetteProvider
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < IMClient >>>
 abstract class ArcImClient implements RustOpaqueInterface {}
 
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < NotesClient < DefaultAnisetteProvider > >>>
+abstract class ArcNotesClientDefaultAnisetteProvider
+    implements RustOpaqueInterface {}
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < IdmsAuthListener >>>
 abstract class ArcIdmsAuthListener implements RustOpaqueInterface {}
 

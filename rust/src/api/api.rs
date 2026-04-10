@@ -19,7 +19,7 @@ use prost::Message as prostMessage;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::{runtime::Runtime, select, sync::{broadcast, mpsc, watch, RwLock}};
 pub use mpsc::Sender;
-pub use rustpush::{APSMessage, CircleClientSession, CircleServerSession, EntitlementAuthState, IDSNGMIdentity, LoginDelegate, MADRID_SERVICE, TokenProvider, authenticate_apple, authenticate_phone, authenticate_smsless, cloud_messages::CloudMessagesClient, cloudkit::{CloudKitClient, CloudKitState}, facetime::{FACETIME_SERVICE, FTClient, FTState, VIDEO_SERVICE}, findmy::{FindMyClient, FindMyState, FindMyStateManager, MULTIPLEX_SERVICE}, keychain::{KeychainClient, KeychainClientState}, login_apple_delegates, name_photo_sharing::ProfilesClient, sharedstreams::{AssetMetadata, FFMpegFilePackager, FileMetadata, FilePackager, PreparedAsset, PreparedFile, SharedStreamClient, SharedStreamsState, SyncController, SyncManager, SyncState}, statuskit::{ChannelInterestToken, StatusKitClient, StatusKitState, StatusKitStatus}};
+pub use rustpush::{APSMessage, CircleClientSession, CircleServerSession, EntitlementAuthState, IDSNGMIdentity, LoginDelegate, MADRID_SERVICE, TokenProvider, authenticate_apple, authenticate_phone, authenticate_smsless, cloud_messages::CloudMessagesClient, cloudkit::{CloudKitClient, CloudKitState}, facetime::{FACETIME_SERVICE, FTClient, FTState, VIDEO_SERVICE}, findmy::{FindMyClient, FindMyState, FindMyStateManager, MULTIPLEX_SERVICE}, keychain::{KeychainClient, KeychainClientState}, login_apple_delegates, name_photo_sharing::ProfilesClient, notes::NotesClient, sharedstreams::{AssetMetadata, FFMpegFilePackager, FileMetadata, FilePackager, PreparedAsset, PreparedFile, SharedStreamClient, SharedStreamsState, SyncController, SyncManager, SyncState}, statuskit::{ChannelInterestToken, StatusKitClient, StatusKitState, StatusKitStatus}};
 use rustpush::{AnisetteProvider, DebugRwLock, cloudkit::contact_info_to_handle, cloudkit_proto::{CuttlefishSerializedKey, base64_encode}, findmy::SharedBeaconClient, keychain::{CloudKey, CurrentBottle, SivKey}, passwords::PasswordState, request_update_account};
 pub use rustpush::findmy::{FindMyFriendsClient, FindMyPhoneClient};
 pub use rustpush::sharedstreams::{SharedAlbum, SyncStatus};
@@ -558,6 +558,7 @@ pub struct SharedICloudServices {
     pub sharedstreams: Option<SyncManager<DefaultAnisetteProvider, MyFilePackager>>,
     pub cloud_messages_client: Option<Arc<CloudMessagesClient<DefaultAnisetteProvider>>>,
     pub statuskit_client: Arc<StatusKitClient<DefaultAnisetteProvider>>,
+    pub notes: Option<Arc<NotesClient<DefaultAnisetteProvider>>>,
 }
 
 impl SharedPushState {
@@ -636,6 +637,7 @@ impl SharedPushState {
                         Some(make_cloud_messages_client(&cloudkit, &keychain))
                     } else { None },
                     statuskit_client: make_statuskit(path.clone(), &token_provider, &conn, config, &client).await,
+                    notes: Some(Arc::new(NotesClient::new(cloudkit.clone()))),
                 })
             } else { None },
 
@@ -2819,4 +2821,100 @@ pub async fn convert_token_to_uuid(state: &Arc<IMClient>, handle: String, token:
 pub async fn get_sms_targets(state: &Arc<IMClient>, handle: String, refresh: bool) -> anyhow::Result<Vec<PrivateDeviceInfo>> {
     let targets = state.identity.get_sms_targets(&handle, refresh).await?;
     Ok(targets)
+}
+
+// Notes types
+#[derive(Clone)]
+#[frb(non_opaque)]
+pub struct DartNoteFolder {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Clone)]
+#[frb(non_opaque)]
+#[frb(type_64bit_int)]
+pub struct DartNoteEntry {
+    pub id: String,
+    pub folder_id: String,
+    pub title: String,
+    pub snippet: String,
+    pub modified: i64,
+}
+
+#[derive(Clone)]
+#[frb(non_opaque)]
+pub struct DartFormattingRun {
+    pub length: u32,
+    pub style: DartNoteStyleType,
+}
+
+#[derive(Clone)]
+#[frb(non_opaque)]
+pub enum DartNoteStyleType {
+    Default,
+    Bold,
+    Italic,
+    Title,
+    Heading,
+    Monospace,
+    Checklist { checked: bool },
+    BulletedList,
+    DashedList,
+    NumberedList,
+}
+
+#[derive(Clone)]
+#[frb(non_opaque)]
+pub struct DartParsedNote {
+    pub title: String,
+    pub body: String,
+    pub formatting: Vec<DartFormattingRun>,
+}
+
+pub async fn sync_notes(
+    notes: &Arc<NotesClient<DefaultAnisetteProvider>>,
+    continuation_token: Option<Vec<u8>>,
+) -> anyhow::Result<(Option<Vec<u8>>, Vec<DartNoteFolder>, Vec<DartNoteEntry>)> {
+    let (token, folders, entries) = notes.sync_notes(continuation_token).await?;
+    Ok((
+        token,
+        folders.into_iter().map(|f| DartNoteFolder {
+            id: f.id,
+            title: f.title,
+        }).collect(),
+        entries.into_iter().map(|e| DartNoteEntry {
+            id: e.id,
+            folder_id: e.folder_id,
+            title: e.title,
+            snippet: e.snippet,
+            modified: e.modified,
+        }).collect(),
+    ))
+}
+
+pub async fn get_note(
+    notes: &Arc<NotesClient<DefaultAnisetteProvider>>,
+    note_id: String,
+) -> anyhow::Result<DartParsedNote> {
+    let parsed = notes.get_note(&note_id).await?;
+    Ok(DartParsedNote {
+        title: parsed.title,
+        body: parsed.body,
+        formatting: parsed.formatting.into_iter().map(|f| DartFormattingRun {
+            length: f.length,
+            style: match f.style {
+                rustpush::notes::NoteStyleType::Default => DartNoteStyleType::Default,
+                rustpush::notes::NoteStyleType::Bold => DartNoteStyleType::Bold,
+                rustpush::notes::NoteStyleType::Italic => DartNoteStyleType::Italic,
+                rustpush::notes::NoteStyleType::Title => DartNoteStyleType::Title,
+                rustpush::notes::NoteStyleType::Heading => DartNoteStyleType::Heading,
+                rustpush::notes::NoteStyleType::Monospace => DartNoteStyleType::Monospace,
+                rustpush::notes::NoteStyleType::Checklist { checked } => DartNoteStyleType::Checklist { checked },
+                rustpush::notes::NoteStyleType::BulletedList => DartNoteStyleType::BulletedList,
+                rustpush::notes::NoteStyleType::DashedList => DartNoteStyleType::DashedList,
+                rustpush::notes::NoteStyleType::NumberedList => DartNoteStyleType::NumberedList,
+            },
+        }).collect(),
+    })
 }
