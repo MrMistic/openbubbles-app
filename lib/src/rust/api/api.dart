@@ -6332,8 +6332,3 @@ Future<(Uint8List?, List<DartNoteFolder>, List<DartNoteEntry>)> syncNotes(
     RustLib.instance.api.crateApiApiSyncNotes(
         notes: notes, continuationToken: continuationToken);
 
-Future<DartParsedNote> getNote(
-        {required ArcNotesClientDefaultAnisetteProvider notes,
-        required String noteId}) =>
-    RustLib.instance.api
-        .crateApiApiGetNote(notes: notes, noteId: noteId);

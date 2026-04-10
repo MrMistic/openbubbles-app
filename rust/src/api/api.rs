@@ -2893,28 +2893,4 @@ pub async fn sync_notes(
     ))
 }
 
-pub async fn get_note(
-    notes: &Arc<NotesClient<DefaultAnisetteProvider>>,
-    note_id: String,
-) -> anyhow::Result<DartParsedNote> {
-    let parsed = notes.get_note(&note_id).await?;
-    Ok(DartParsedNote {
-        title: parsed.title,
-        body: parsed.body,
-        formatting: parsed.formatting.into_iter().map(|f| DartFormattingRun {
-            length: f.length,
-            style: match f.style {
-                rustpush::notes::NoteStyleType::Default => DartNoteStyleType::Default,
-                rustpush::notes::NoteStyleType::Bold => DartNoteStyleType::Bold,
-                rustpush::notes::NoteStyleType::Italic => DartNoteStyleType::Italic,
-                rustpush::notes::NoteStyleType::Title => DartNoteStyleType::Title,
-                rustpush::notes::NoteStyleType::Heading => DartNoteStyleType::Heading,
-                rustpush::notes::NoteStyleType::Monospace => DartNoteStyleType::Monospace,
-                rustpush::notes::NoteStyleType::Checklist { checked } => DartNoteStyleType::Checklist { checked },
-                rustpush::notes::NoteStyleType::BulletedList => DartNoteStyleType::BulletedList,
-                rustpush::notes::NoteStyleType::DashedList => DartNoteStyleType::DashedList,
-                rustpush::notes::NoteStyleType::NumberedList => DartNoteStyleType::NumberedList,
-            },
-        }).collect(),
-    })
-}
+

@@ -73,7 +73,6 @@ class _NotesPageState extends OptimizedState<NotesPage> {
     Navigator.of(context).push(
       ThemeSwitcher.buildPageRoute(
         builder: (context) => NoteViewer(
-          notesClient: notesClient!,
           noteEntry: entry,
         ),
       ),
