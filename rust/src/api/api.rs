@@ -2126,10 +2126,67 @@ pub async fn select_friend(config: &JoinedOSConfig, client: &mut FindMyFriendsCl
     Ok(client.following.clone())
 }
 
+/// Post the device's current GPS coordinates to Apple's FMF server.
+/// This makes the OB device appear as a trackable location on friends' Find My maps.
+pub async fn post_my_location(
+    config: &JoinedOSConfig,
+    client: &mut FindMyFriendsClient<DefaultAnisetteProvider>,
+    latitude: f64,
+    longitude: f64,
+    altitude: f64,
+    horizontal_accuracy: f64,
+    vertical_accuracy: f64,
+) -> anyhow::Result<()> {
+    client.post_location(
+        &*config.config(),
+        latitude,
+        longitude,
+        altitude,
+        horizontal_accuracy,
+        vertical_accuracy,
+    ).await?;
+    Ok(())
+}
+
 pub async fn select_background_friend(fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>, friend: Option<String>) -> anyhow::Result<Vec<Follow>> {
     let mut x = fmfd.daemon.lock().await;
     x.selected_friend = friend;
     Ok(x.following.clone())
+}
+
+/// Submit own device location via the SearchParty /findmyservice/v2/submit endpoint.
+/// This is the correct mechanism for publishing location to friends (not refreshClient).
+pub async fn submit_own_location(
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+    latitude: f64,
+    longitude: f64,
+    altitude: f64,
+    horizontal_accuracy: f64,
+) -> anyhow::Result<()> {
+    fmfd.submit_own_location(latitude, longitude, altitude, horizontal_accuracy).await?;
+    Ok(())
+}
+
+/// Post location via the background daemon client (preferred — daemon mode is required for posting).
+pub async fn post_my_location_background(
+    config: &JoinedOSConfig,
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+    latitude: f64,
+    longitude: f64,
+    altitude: f64,
+    horizontal_accuracy: f64,
+    vertical_accuracy: f64,
+) -> anyhow::Result<()> {
+    let mut daemon = fmfd.daemon.lock().await;
+    daemon.post_location(
+        &*config.config(),
+        latitude,
+        longitude,
+        altitude,
+        horizontal_accuracy,
+        vertical_accuracy,
+    ).await?;
+    Ok(())
 }
 
 pub async fn get_background_following(fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>) -> Vec<Follow> {
@@ -2138,6 +2195,14 @@ pub async fn get_background_following(fmfd: &Arc<FindMyClient<DefaultAnisettePro
 }
 
 pub async fn refresh_background_following(state: &Arc<FindMyClient<DefaultAnisetteProvider>>, config: &JoinedOSConfig) -> anyhow::Result<Vec<Follow>> {
+    // === TEMPORARY TEST: Submit Montreal location on every refresh ===
+    info!("[FMF-SUBMIT] Triggering submit_own_location (Montreal: 45.5017, -73.5673)");
+    match state.submit_own_location(45.5017, -73.5673, 50.0, 10.0).await {
+        Ok(()) => info!("[FMF-SUBMIT] submit_own_location succeeded!"),
+        Err(e) => log::error!("[FMF-SUBMIT] submit_own_location failed: {:?}", e),
+    }
+    // === END TEMPORARY TEST ===
+
     let mut x = state.daemon.lock().await;
     x.refresh(&*config.config()).await?;
     Ok(x.following.clone())
