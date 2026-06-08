@@ -8,6 +8,7 @@ import 'package:bluebubbles/app/layouts/conversation_view/widgets/header/header_
 import 'package:bluebubbles/app/components/avatars/contact_avatar_group_widget.dart';
 import 'package:bluebubbles/app/wrappers/theme_switcher.dart';
 import 'package:bluebubbles/app/wrappers/stateful_boilerplate.dart';
+import 'package:bluebubbles/app/layouts/findmy/findmy_page.dart';
 import 'package:bluebubbles/helpers/helpers.dart';
 import 'package:bluebubbles/database/database.dart';
 import 'package:bluebubbles/database/models.dart';
@@ -460,6 +461,7 @@ class _ChatIconAndTitleState extends CustomState<_ChatIconAndTitle, void, Conver
 
   // --- FIND MY FRIENDS CITY/STATE ---
   String? shortAddress;
+  String? _findMyFriendId;
   bool isLoadingFindMy = false;
 
   static final Map<String, (String?, DateTime)> _findMyCache = {};
@@ -559,17 +561,11 @@ class _ChatIconAndTitleState extends CustomState<_ChatIconAndTitle, void, Conver
     setState(() => isLoadingFindMy = true);
 
     try {
-      // Create a Find My Friends client using the current push state
-      final fmfClient = await api.makeFindMyFriends(
-        path: pushService.statePath,
-        config: pushService.state!.osConfig,
-        aps: pushService.state!.conn,
-        anisette: pushService.state!.anisette,
-        provider: pushService.state!.icloudServices!.tokenProvider,
-      );
-
-      // Fetch the current following/friends list
-      final following = await api.getFollowing(client: fmfClient);
+      // Use the background `fmfd` client (NOT a standalone makeFindMyFriends client). Only `fmfd`
+      // holds friend_secure_keys and can decrypt iOS 15+ secure-location friends; the standalone
+      // client could never decrypt them. This also avoids the per-call initClient network round
+      // trip — it just reads the list the 5s background loop already maintains.
+      final following = await api.getBackgroundFollowing(fmfd: pushService.state!.icloudServices!.fmfd!);
 
       // Try to match on any known handle for the friend
       final friend = following.firstWhereOrNull(
@@ -577,11 +573,23 @@ class _ChatIconAndTitleState extends CustomState<_ChatIconAndTitle, void, Conver
       );
 
       String? cityState;
-      if (friend != null && friend.lastLocation?.address != null) {
-        final addr = friend.lastLocation!.address!;
-        // E.g. "San Francisco, CA" or fallback to "Country" if stateCode is missing
-        if (addr.locality != null && (addr.stateCode != null || addr.countryCode != null)) {
+      final loc = friend?.lastLocation;
+      if (loc?.address != null) {
+        // Legacy (iOS 12) path: Apple's server already geocoded and shipped the address.
+        final addr = loc!.address!;
+        if (addr.locality != null) {
           cityState = "${addr.locality}, ${addr.stateCode ?? addr.countryCode}";
+        }
+      } else if (loc != null && loc.latitude != 0 && loc.longitude != 0) {
+        // Secure-location path: raw coordinates only, so reverse-geocode client-side.
+        try {
+          final placemark = await pushService.reverseGeocode(loc.latitude, loc.longitude);
+          if (placemark?.locality != null) {
+            final state = placemark!.administrativeArea?.substring(0, 2).toUpperCase();
+            cityState = "${placemark.locality}, ${state ?? placemark.isoCountryCode}";
+          }
+        } catch (err, s) {
+          Logger.warn("Header friend geocoding failed", error: err, trace: s);
         }
       }
 
@@ -589,6 +597,7 @@ class _ChatIconAndTitleState extends CustomState<_ChatIconAndTitle, void, Conver
 
       setState(() {
         shortAddress = cityState;
+        _findMyFriendId = friend?.id;
         isLoadingFindMy = false;
       });
     } catch (e) {
@@ -655,11 +664,24 @@ class _ChatIconAndTitleState extends CustomState<_ChatIconAndTitle, void, Conver
           ),
         )
       else if (shortAddress != null && shortAddress!.isNotEmpty)
-        Padding(
-          padding: const EdgeInsets.only(top: 2.0, left: 6.0),
-          child: Text(
-            shortAddress!,
-            style: context.theme.textTheme.bodySmall?.copyWith(color: context.theme.colorScheme.outline),
+        GestureDetector(
+          onTap: () {
+            if (_findMyFriendId != null) {
+              Navigator.of(context).push(
+                ThemeSwitcher.buildPageRoute(
+                  builder: (BuildContext context) {
+                    return FindMyPage(defaultFriend: _findMyFriendId);
+                  },
+                ),
+              );
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.only(top: 2.0, left: 6.0),
+            child: Text(
+              shortAddress!,
+              style: context.theme.textTheme.bodySmall?.copyWith(color: context.theme.colorScheme.outline),
+            ),
           ),
         ),
     ];

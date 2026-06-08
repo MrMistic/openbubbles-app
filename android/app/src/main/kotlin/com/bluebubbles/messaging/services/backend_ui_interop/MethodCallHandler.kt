@@ -53,6 +53,7 @@ import com.bluebubbles.messaging.services.system.GetFullResolution
 import com.bluebubbles.messaging.services.system.GetZenMode
 import com.bluebubbles.messaging.services.system.CreateSubjectSticker
 import com.bluebubbles.messaging.services.system.SetDndMode
+import com.bluebubbles.messaging.services.system.HeicSequenceDecoder
 import com.bluebubbles.messaging.services.system.HeifDecoder
 import com.bluebubbles.messaging.services.system.HeifEncoder
 import com.bluebubbles.messaging.services.system.NativeSyncIsolateHandler
@@ -133,6 +134,7 @@ class MethodCallHandler {
             GetZenMode.tag -> GetZenMode().handleMethodCall(call, result, context)
             SetDndMode.tag -> SetDndMode().handleMethodCall(call, result, context)
             HeifDecoder.tag -> HeifDecoder().handleMethodCall(call, result, context)
+            HeicSequenceDecoder.tag -> HeicSequenceDecoder().handleMethodCall(call, result, context)
             CreateSubjectSticker.tag -> CreateSubjectSticker().handleMethodCall(call, result, context)
             GetFullResolution.tag -> GetFullResolution().handleMethodCall(call, result, context)
             OpenSMSAppHandler.tag -> OpenSMSAppHandler().handleMethodCall(call, result, context)

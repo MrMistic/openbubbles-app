@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:bluebubbles/helpers/helpers.dart';
 import 'package:bluebubbles/app/layouts/settings/pages/message_view/sticker_manager_panel.dart';
 import 'package:bluebubbles/app/layouts/settings/widgets/settings_widgets.dart';
@@ -194,6 +196,73 @@ class _AttachmentPanelState extends OptimizedState<AttachmentPanel> {
                         )),
                   ],
                 ),
+                if (!kIsWeb && !kIsDesktop)
+                  SettingsHeader(
+                      iosSubtitle: iosSubtitle,
+                      materialSubtitle: materialSubtitle,
+                      text: "Live Stickers"),
+                if (!kIsWeb && !kIsDesktop)
+                  SettingsSection(
+                    backgroundColor: tileColor,
+                    children: [
+                      const SettingsSubtitle(
+                        subtitle: "I recommend you keep this on",
+                        bottomPadding: false,
+                      ),
+                      Obx(() => SettingsSwitch(
+                            onChanged: (bool val) {
+                              ss.settings.liveStickerAnimateNoAlpha.value = val;
+                              saveSettings();
+                            },
+                            initialVal: ss.settings.liveStickerAnimateNoAlpha.value,
+                            title: "Animate Live Stickers",
+                            subtitle:
+                                "Off: stickers are static but keep their original transparency. "
+                                "On: stickers animate; near-black pixels are made transparent so they look right on most backgrounds, but any genuinely dark content in the sticker may also drop out.",
+                            backgroundColor: tileColor,
+                            isThreeLine: true,
+                          )),
+                      Obx(() {
+                        if (!ss.settings.liveStickerAnimateNoAlpha.value) return const SizedBox.shrink();
+                        return Column(children: [
+                          const SettingsDivider(padding: EdgeInsets.only(left: 16.0)),
+                          SettingsTile(
+                            title: "Black threshold: ${ss.settings.liveStickerBlackThreshold.value}",
+                            subtitle: "Pixels with R, G, B all below this value are made transparent. "
+                                "Higher = more aggressive. Lower = keeps more dark content.",
+                            backgroundColor: tileColor,
+                            trailing: SizedBox(
+                              width: 160,
+                              child: Slider(
+                                value: ss.settings.liveStickerBlackThreshold.value.toDouble(),
+                                min: 0,
+                                max: 64,
+                                divisions: 64,
+                                label: ss.settings.liveStickerBlackThreshold.value.toString(),
+                                onChanged: (double val) {
+                                  ss.settings.liveStickerBlackThreshold.value = val.round();
+                                },
+                                onChangeEnd: (double val) async {
+                                  saveSettings();
+                                  // Invalidate cached .apng files so they re-decode
+                                  // with the new threshold on next view.
+                                  final dir = Directory(
+                                    "${fs.appDocDir.path}/attachments");
+                                  if (await dir.exists()) {
+                                    await for (final entity in dir.list(recursive: true)) {
+                                      if (entity is File && entity.path.endsWith('.heics.apng')) {
+                                        try { await entity.delete(); } catch (_) {}
+                                      }
+                                    }
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                        ]);
+                      }),
+                    ],
+                  ),
                 if (!kIsWeb)
                   SettingsHeader(
                       iosSubtitle: iosSubtitle,

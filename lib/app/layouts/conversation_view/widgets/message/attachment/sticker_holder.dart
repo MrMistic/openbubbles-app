@@ -8,7 +8,6 @@ import 'package:bluebubbles/utils/logger/logger.dart';
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:universal_io/io.dart';
 
 class StickerHolder extends StatefulWidget {
@@ -59,22 +58,67 @@ class _StickerHolderState extends OptimizedState<StickerHolder> with AutomaticKe
     try {
       String pathName = attachment.path;
 
-      // Check for HEIC and use converted PNG if available, or convert
-      if (attachment.mimeType?.contains('image/hei') == true) {
-        final pngPath = "$pathName.png";
-        if (await File(pngPath).exists()) {
-          pathName = pngPath;
-        } else if (!kIsDesktop) {
-          final file = await FlutterImageCompress.compressAndGetFile(
-            pathName,
-            pngPath,
-            format: CompressFormat.png,
-            keepExif: true,
-            quality: 100,
-          );
-          if (file != null) {
-            pathName = pngPath;
+      // Check for animated HEIC sequence (Live Stickers)
+      if (attachment.mimeType?.contains('image/heic-sequence') == true) {
+        Logger.info("[HEIC-SEQ] sticker_holder: detected image/heic-sequence, path=$pathName");
+        final apngPath = "$pathName.apng";
+        bool apngCacheValid = false;
+        if (await File(apngPath).exists()) {
+          try {
+            apngCacheValid = await File(apngPath).length() > 0;
+          } catch (_) {
+            apngCacheValid = false;
           }
+          if (!apngCacheValid) {
+            Logger.warn("[HEIC-SEQ] sticker_holder: stale 0-byte .apng cache at $apngPath, deleting");
+            try { await File(apngPath).delete(); } catch (_) {}
+          }
+        }
+        if (apngCacheValid) {
+          Logger.info("[HEIC-SEQ] sticker_holder: cache hit at $apngPath");
+          pathName = apngPath;
+        } else if (!kIsDesktop && (fs.androidInfo?.version.sdkInt ?? 0) >= 28
+            && ss.settings.liveStickerAnimateNoAlpha.value) {
+          Logger.info("[HEIC-SEQ] sticker_holder: no cache, invoking decode-heic-sequence (animateNoAlpha=true)");
+          try {
+            final bytes = await mcs.invokeMethod("decode-heic-sequence", {
+              "file": pathName,
+              "animateNoAlpha": true,
+              "blackThreshold": ss.settings.liveStickerBlackThreshold.value,
+            });
+            if (bytes != null) {
+              Logger.info("[HEIC-SEQ] sticker_holder: decode success, ${bytes.length} bytes, caching");
+              await File(apngPath).writeAsBytes(bytes);
+              pathName = apngPath;
+            } else {
+              Logger.warn("[HEIC-SEQ] sticker_holder: decode returned null, falling back to still-frame");
+              final pngPath = "$pathName.png";
+              final converted = await as.convertHeicToPng(sourcePath: pathName, outputPath: pngPath);
+              if (converted != null) pathName = converted.path;
+            }
+          } catch (e) {
+            Logger.warn("[HEIC-SEQ] sticker_holder: decode exception: $e, falling back to still-frame");
+            final pngPath = "$pathName.png";
+            final converted = await as.convertHeicToPng(sourcePath: pathName, outputPath: pngPath);
+            if (converted != null) pathName = converted.path;
+          }
+        } else {
+          // Either API < 28, desktop, or user opted for static-with-alpha
+          // (liveStickerAnimateNoAlpha=false). Use the HeifCoder still-frame
+          // path which preserves transparency.
+          if (!kIsDesktop) {
+            Logger.info("[HEIC-SEQ] sticker_holder: using still-frame fallback (animateNoAlpha=${ss.settings.liveStickerAnimateNoAlpha.value})");
+            final pngPath = "$pathName.png";
+            final converted = await as.convertHeicToPng(sourcePath: pathName, outputPath: pngPath);
+            if (converted != null) pathName = converted.path;
+          }
+        }
+      } else if (attachment.mimeType?.contains('image/hei') == true) {
+        // Check for HEIC and use converted PNG if available, or convert
+        if (!kIsDesktop) {
+          final pngPath = "$pathName.png";
+          final converted = await as.convertHeicToPng(sourcePath: pathName, outputPath: pngPath);
+          if (converted != null) pathName = converted.path;
         }
       }
 
@@ -87,6 +131,7 @@ class _StickerHolderState extends OptimizedState<StickerHolder> with AutomaticKe
       //   ),
       // );
       final bytes = await File(pathName).readAsBytes();
+      Logger.info("[HEIC-SEQ] sticker_holder: final load from $pathName, ${bytes.length} bytes, mime=${attachment.mimeType}");
       var stickerData = message.attributedBody.firstOrNull?.runs
         .firstWhereOrNull((element) => element.attributes?.attachmentGuid == attachment.guid)?.attributes?.stickerData;
       controller.stickerData[message.guid!] = {

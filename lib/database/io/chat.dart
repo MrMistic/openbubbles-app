@@ -78,6 +78,92 @@ class GetChatAttachments extends AsyncTask<List<dynamic>, List<Attachment>> {
   }
 }
 
+/// Async method to get a BOUNDED slice of a chat's media/doc attachments,
+/// used by the conversation details page.
+///
+/// Unlike [GetChatAttachments] (which loads the entire chat history to collect
+/// every attachment — required for chat deletion), this queries the Attachments
+/// box directly with a nested link to the chat and a hard `limit`, so it never
+/// materializes more than [limit] attachments regardless of chat size.
+///
+/// `kind`: "media" (image/video), "doc" (everything else), or "location".
+/// The image/video vs doc split and the isGroupEvent/isInteractive exclusions
+/// are computed getters (not DB columns), so they are applied as a post-filter
+/// over the bounded result — cheap because the set is already capped.
+class GetChatMediaAttachments extends AsyncTask<List<dynamic>, List<Attachment>> {
+  final List<dynamic> stuff;
+
+  GetChatMediaAttachments(this.stuff);
+
+  @override
+  AsyncTask<List<dynamic>, List<Attachment>> instantiate(List<dynamic> parameters,
+      [Map<String, SharedData>? sharedData]) {
+    return GetChatMediaAttachments(parameters);
+  }
+
+  @override
+  List<dynamic> parameters() {
+    return stuff;
+  }
+
+  @override
+  FutureOr<List<Attachment>> run() {
+    final int chatId = stuff[0];
+    final String kind = stuff[1];
+    final int limit = stuff[2];
+
+    return Database.runInTransaction(TxMode.read, () {
+      // Over-fetch modestly so the post-filter (which drops group-event /
+      // interactive attachments) can still yield up to `limit` visible items.
+      final scanLimit = limit * 4;
+
+      final qb = Database.attachments.query(Attachment_.mimeType.notNull())
+        ..order(Attachment_.id, flags: Order.descending);
+      // Nested link: Attachment -> Message -> Chat. Bounds the scan to this
+      // chat's attachments without ever loading Message objects into Dart.
+      qb.link(
+        Attachment_.message,
+        Message_.dateDeleted.isNull(),
+      ).link(Message_.chat, Chat_.id.equals(chatId));
+
+      final query = qb.build();
+      query.limit = scanLimit;
+      final candidates = query.find();
+      query.close();
+
+      bool matchesKind(Attachment a) {
+        final start = a.mimeStart;
+        final mime = a.mimeType ?? "";
+        switch (kind) {
+          case "media":
+            return start == "image" || start == "video";
+          case "location":
+            return mime.contains("location");
+          case "doc":
+          default:
+            return start != "image" && start != "video" && !mime.contains("location");
+        }
+      }
+
+      final result = <Attachment>[];
+      final seen = <String>{};
+      for (final a in candidates) {
+        final msg = a.message.target;
+        // Exclude group-event and interactive-message attachments (computed
+        // getters — must be evaluated in Dart, but only over the capped set).
+        if (msg != null && ((msg.isGroupEvent) || (msg.isInteractive))) continue;
+        if (!matchesKind(a)) continue;
+        if (a.guid != null && !seen.add(a.guid!)) continue;
+        // Attach the resolved message so the caller can set the handle.
+        a.message.target = msg;
+        result.add(a);
+        if (result.length >= limit) break;
+      }
+      return result;
+    });
+  }
+}
+
 /// Async method to get messages from objectbox
 class GetMessages extends AsyncTask<List<dynamic>, List<Message>> {
   final List<dynamic> stuff;
@@ -1382,6 +1468,17 @@ class Chat {
     if (kIsWeb || id == null) return [];
 
     final task = GetChatAttachments([id!, fetchDeleted]);
+    return (await createAsyncTask<List<Attachment>>(task)) ?? [];
+  }
+
+  /// Get a bounded slice of this chat's media/doc/location attachments for the
+  /// details page. [kind] is "media", "doc", or "location". Never loads more
+  /// than [limit] attachments regardless of chat size (unlike
+  /// [getAttachmentsAsync], which loads all of them for deletion).
+  Future<List<Attachment>> getMediaAttachmentsAsync(String kind, {int limit = 24}) async {
+    if (kIsWeb || id == null) return [];
+
+    final task = GetChatMediaAttachments([id!, kind, limit]);
     return (await createAsyncTask<List<Attachment>>(task)) ?? [];
   }
 

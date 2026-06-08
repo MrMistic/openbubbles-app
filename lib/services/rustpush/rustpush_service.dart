@@ -21,6 +21,7 @@ import 'package:bluebubbles/database/models.dart';
 import 'package:bluebubbles/services/services.dart';
 import 'package:bluebubbles/utils/crypto_utils.dart';
 import 'package:bluebubbles/utils/logger/logger.dart';
+import 'package:bluebubbles/services/ui/sticker_processor.dart';
 import 'package:collection/collection.dart';
 import 'package:crypto/crypto.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
@@ -512,13 +513,92 @@ class RustPushBackend implements BackendService {
     if (chat.isRpSms && !smsForwardingEnabled()) {
       throw Exception("SMS is not enabled (enable in settings -> user)");
     }
+
+    // Detect sticker sends early — before upload — so we can process the image
+    final isStickerSend = m.balloonBundleId == "com.apple.Stickers.UserGenerated.MessagesExtension";
+
+    // Diagnostic: chokepoint log so any sticker arriving here from any queue
+    // entry point (send_animation, share intent, retry, etc.) is visible.
+    Logger.info(
+      "sendAttachment ENTRY guid=${m.guid} balloonBundleId=${m.balloonBundleId} "
+      "isStickerSend=$isStickerSend mime=${att.mimeType} uti=${att.uti} "
+      "transferName=${att.transferName}",
+      tag: "StickerSend",
+    );
+
+    if (isStickerSend) {
+      // The balloon bundle id was only a signal to trigger the sticker
+      // pipeline. Stickers do not actually carry a balloonBundleId on the
+      // wire (the recipient identifies them by EXIF metadata in the PNG),
+      // and persisting one locally causes Message.isInteractive to be true,
+      // which routes the row through InteractiveHolder -> UnsupportedInteractive
+      // ("Unknown / Unsupported interactive message"). Clear it here so the
+      // local row renders as a plain image attachment.
+      m.balloonBundleId = null;
+      m.hasApplePayloadData = false;
+      m.save(chat: chat);
+    }
+
+    // For sticker sends, process the image (resize + EXIF injection) and send
+    // as an inline attachment. iOS imagent expects stickers to arrive as inline
+    // attachments (embedded in the APNs plist as ia-0), NOT as MMCS uploads.
+    // Sending via MMCS causes imagent to log "tried to init IMFileTransfer with
+    // non-local URL: (null)" and "<Sticker> Missing IMFileTransfer", then fall
+    // back to treating the sticker as a regular image.
+    String uploadPath = att.getFile().path!;
+    String uploadMime = att.mimeType ?? "application/octet-stream";
+    String uploadUti = att.uti ?? "public.data";
+    String uploadName = att.transferName!;
+
+    // Animated (Live) stickers: the source is an Apple HEIC-sequence (.heics),
+    // the exact format iOS produces for Live Stickers. There is nothing to
+    // encode — send the original bytes untouched with the heic-sequence
+    // mime/uti so the recipient renders a native animated sticker. Detect by
+    // extension because the mime_type package doesn't recognize .heics.
+    final srcName = att.transferName ?? "";
+    final isAnimatedSticker = isStickerSend &&
+        (srcName.toLowerCase().endsWith(".heics") ||
+            (att.mimeType?.contains("image/heic-sequence") ?? false));
+
+    if (isStickerSend && isAnimatedSticker) {
+      // Pass through the raw .heics bytes; StickerProcessor (PNG resize) would
+      // destroy the animation, so it is intentionally skipped here.
+      uploadPath = att.getFile().path!;
+      uploadMime = "image/heic-sequence";
+      uploadUti = "public.heics";
+      uploadName = "${basename(srcName).split('.').first}.heics";
+      Logger.info(
+        "Animated sticker: sending raw HEIC-sequence untouched (path=$uploadPath)",
+        tag: "StickerSend",
+      );
+    } else if (isStickerSend) {
+      final platformFile = att.getFile();
+      final processedBytes = await StickerProcessor.process(platformFile);
+      if (processedBytes != null) {
+        // Write processed bytes to a temp file for MMCS upload
+        final tempDir = await getTemporaryDirectory();
+        final stickerTempFile = File('${tempDir.path}/sticker_${uuid.v4()}.png');
+        await stickerTempFile.writeAsBytes(processedBytes);
+        uploadPath = stickerTempFile.path;
+        uploadMime = "image/png";
+        uploadUti = "public.png";
+        uploadName = "${basename(att.transferName!).split('.').first}.png";
+        Logger.info("Sticker processed successfully (${processedBytes.length} bytes)", tag: "StickerSend");
+      } else {
+        // Fallback: send as plain PNG attachment via MMCS
+        Logger.warn("Sticker processing failed, sending as regular image", tag: "StickerSend");
+      }
+    }
+
+    // Upload via MMCS
+    api.Attachment? attachment;
+
     var stream = api.uploadAttachment(
         aps: pushService.state!.conn,
-        path: att.getFile().path!,
-        mime: att.mimeType ?? "application/octet-stream",
-        uti: att.uti ?? "public.data",
-        name: att.transferName!);
-    api.Attachment? attachment;
+        path: uploadPath,
+        mime: uploadMime,
+        uti: uploadUti,
+        name: uploadName);
     await for (final event in stream) {
       if (event.attachment != null) {
         Logger.info("upload finish");
@@ -531,28 +611,29 @@ class RustPushBackend implements BackendService {
       }
     }
     Logger.info("uploaded");
-    // Detect sticker sends by balloonBundleId
-    final isStickerSend = m.balloonBundleId == "com.apple.Stickers.UserGenerated.MessagesExtension";
     api.PartExtension? stickerExt;
     api.ExtensionApp? stickerApp;
     if (isStickerSend) {
-      stickerExt = api.PartExtension.sticker(
-        msgWidth: 0.0,
-        rotation: 0.0,
-        sai: BigInt.zero,
-        scale: 1.0,
-        sli: BigInt.zero,
-        normalizedX: 0.5,
-        normalizedY: 0.5,
-        version: BigInt.one,
-        hash: "",
-        safi: BigInt.zero,
+      // Standalone sticker: carry the minimal sticker user-info the recipient's
+      // BlastDoor uses to classify the attachment as a sticker (sid/shash/
+      // stickerEffectType + pid via the Rust to_dict), but NO positioning attrs
+      // (those are reaction-only). Derived from a real iPad standalone sticker
+      // capture (2026-07-03): a plain (non-associated) message whose FILE
+      // carries pid/sid/shash/stickerEffectType and an `ati` envelope.
+      final stickerId = uploadName; // sticker filename, e.g. "<hash>-sticker.png"
+      // Short stable hash of the sticker id for `shash`.
+      final stickerHash = sha256.convert(utf8.encode(stickerId)).toString().substring(0, 16);
+      stickerExt = api.PartExtension.standaloneSticker(
+        stickerId: stickerId,
+        hash: stickerHash,
         effectType: 0,
-        stickerId: uuid.v4().toUpperCase(),
       );
-      stickerApp = api.ExtensionApp(
+      // The `ati` envelope: an ExtensionApp for the user-generated Stickers
+      // plugin. The Rust side emits app_info (ati) but clears bid for
+      // standalone stickers, matching the captured wire format.
+      stickerApp = const api.ExtensionApp(
         name: "Stickers",
-        bundleId: "com.apple.Stickers.UserGenerated.MessagesExtension",
+        bundleId: "com.apple.messages.MSMessageExtensionBalloonPlugin:0000000000:com.apple.Stickers.UserGenerated.MessagesExtension",
         balloon: api.Balloon(
           url: "",
           isLive: false,
@@ -577,7 +658,7 @@ class RustPushBackend implements BackendService {
           effect: m.expressiveSendStyleId,
           service: await getService(chat, forMessage: m),
           subject: m.subject,
-          app: stickerApp ?? (m.payloadData == null ? null : pushService.dataToApp(m.payloadData!)),
+          app: isStickerSend ? stickerApp : (m.payloadData == null ? null : pushService.dataToApp(m.payloadData!)),
           voice: isAudioMessage,
           scheduled: m.dateScheduled != null ? api.ScheduleMode(ms: m.dateScheduled!.millisecondsSinceEpoch, schedule: true) : null,
           embeddedProfile: await pushService.getShareProfileMessageFor(chat.participants),
@@ -589,6 +670,81 @@ class RustPushBackend implements BackendService {
       msg.target = await getSMSTargets(msg.sender!);
     }
     m.stagingGuid = msg.id; // in case delivered comes in before sending "finishes" (also for retries, duh)
+    m.save(chat: chat);
+    await sendMsg(msg);
+    if (chat.isRpSms) {
+      m.stagingGuid = msg.id;
+    } else {
+      m.stagingGuid = null;
+    }
+    m.save(chat: chat);
+    msg.sentTimestamp = DateTime.now().millisecondsSinceEpoch;
+    return (await pushService.reflectMessageDyn(msg))!;
+  }
+
+  /// Upload multiple attachments sequentially and send as a single message
+  /// with multiple IndexedMessagePart entries.
+  Future<Message> sendMultiAttachment(
+    Chat chat,
+    Message m,
+    bool isAudioMessage, {
+    void Function(int current, int total, double progress)? onSendProgress,
+  }) async {
+    if (chat.isRpSms && !smsForwardingEnabled()) {
+      throw Exception("SMS is not enabled (enable in settings -> user)");
+    }
+
+    final attachments = m.attachments.whereType<Attachment>().toList();
+    List<api.Attachment> uploadedAttachments = [];
+
+    for (int i = 0; i < attachments.length; i++) {
+      final att = attachments[i];
+      final uploadPath = att.getFile().path!;
+      final uploadMime = att.mimeType ?? "application/octet-stream";
+      final uploadUti = att.uti ?? "public.data";
+      final uploadName = att.transferName!;
+
+      var stream = api.uploadAttachment(
+          aps: pushService.state!.conn,
+          path: uploadPath,
+          mime: uploadMime,
+          uti: uploadUti,
+          name: uploadName);
+
+      await for (final event in stream) {
+        if (event.attachment != null) {
+          uploadedAttachments.add(event.attachment!);
+          att.metadata = {"rustpush": await api.saveAttachment(att: event.attachment!)};
+          att.save(m);
+        } else if (onSendProgress != null) {
+          onSendProgress(i, attachments.length, event.prog / event.total);
+        }
+      }
+    }
+
+    var msg = await api.newMsg(
+        conversation: await chat.getConversationData(),
+        sender: await chat.ensureHandle(),
+        message: api.Message.message(api.NormalMessage(
+          parts: api.MessageParts(
+              field0: uploadedAttachments.map((a) =>
+                api.IndexedMessagePart(part_: api.MessagePart.attachment(a))
+              ).toList()),
+          replyGuid: m.threadOriginatorGuid,
+          replyPart: m.threadOriginatorGuid == null ? null : m.threadOriginatorPart,
+          effect: m.expressiveSendStyleId,
+          service: await getService(chat, forMessage: m),
+          subject: m.subject,
+          app: null,
+          voice: isAudioMessage,
+          scheduled: m.dateScheduled != null ? api.ScheduleMode(ms: m.dateScheduled!.millisecondsSinceEpoch, schedule: true) : null,
+          embeddedProfile: await pushService.getShareProfileMessageFor(chat.participants),
+        )));
+
+    if (chat.isRpSms) {
+      msg.target = await getSMSTargets(msg.sender!);
+    }
+    m.stagingGuid = msg.id;
     m.save(chat: chat);
     await sendMsg(msg);
     if (chat.isRpSms) {
@@ -2151,6 +2307,9 @@ class RustPushService extends GetxService {
   bool syncStopDelete = false;
 
   void eraseCloudKitSync() {
+    // Reset the sticker sync token so the next launch does a full re-sync.
+    // (Independent of message sync, but reset here alongside the other tokens.)
+    ss.prefs.remove("stickerSyncToken");
     if (ss.prefs.getString("chatSyncToken") == null) return;
     ss.prefs.remove("chatSyncToken");
     ss.prefs.remove("messageSyncToken");
@@ -3199,19 +3358,21 @@ class RustPushService extends GetxService {
     }
     if (push is api.PushMessage_StatusUpdate) {
       var status = push.field0;
-      // Cross-device Focus sync from our other Apple devices
-      if (status.user == '__self_focus_sync__') {
-        final hasActiveFocus = !status.allowed; // allowed=true means no active Focus
-        Logger.info('Focus sync from Apple devices: active=$hasActiveFocus modes=${status.mode}');
-        await mcs.invokeMethod('set-dnd-mode', {'enabled': hasActiveFocus});
-        return;
+      if (status is api.StatusKitMessage_StatusChanged) {
+        // Cross-device Focus sync from our other Apple devices
+        if (status.user == '__self_focus_sync__') {
+          final hasActiveFocus = !status.allowed; // allowed=true means no active Focus
+          Logger.info('Focus sync from Apple devices: active=$hasActiveFocus modes=${status.mode}');
+          await mcs.invokeMethod('set-dnd-mode', {'enabled': hasActiveFocus});
+          return;
+        }
+        final result = (await Chat.findByRust(api.ConversationData(participants: [status.user]), "iMessage", soft: true));
+        if (result == null) return;
+        result.notifsSilenced = !status.allowed;
+        result.save(updateNotifsSilenced: true);
+        cvc(result).recipientNotifsSilenced.value = !status.allowed;
+        cvc(result).chat.notifsSilenced = !status.allowed; // make sure all our objects are in sync lmao
       }
-      final result = (await Chat.findByRust(api.ConversationData(participants: [status.user]), "iMessage", soft: true));
-      if (result == null) return;
-      result.notifsSilenced = !status.allowed;
-      result.save(updateNotifsSilenced: true);
-      cvc(result).recipientNotifsSilenced.value = !status.allowed;
-      cvc(result).chat.notifsSilenced = !status.allowed; // make sure all our objects are in sync lmao
       return;
     }
 
@@ -3863,14 +4024,14 @@ class RustPushService extends GetxService {
       return result.firstOrNull;
     } catch (e, s) {
       Logger.warn("failed to native geocode, falling back to nominatim", error: e, trace: s);
-      var request = await http.dio.get("https://nominatim.openstreetmap.org/reverse?lat=$lat&lon=$lng&format=jsonv2&zoom=10", options: Options(
+      var request = await http.dio.get("https://nominatim.openstreetmap.org/reverse?lat=$lat&lon=$lng&format=jsonv2&zoom=18", options: Options(
         headers: {
           "User-Agent": "OpenBubbles"
         }
       ));
-      // Logger.info("Got location $request");
       return Placemark(
         name: request.data["name"],
+        thoroughfare: request.data["address"]?["road"],
         isoCountryCode: request.data["address"]?["country_code"],
         country: request.data["address"]?["country"],
         locality: request.data["address"]?["city"],
@@ -4898,7 +5059,112 @@ class RustPushService extends GetxService {
         if (state != null) {
           var passwords = state!.icloudServices?.passwords;
           if (passwords != null) {
-            api.syncPasswords(passwords: passwords, conn: state!.conn);
+            await api.syncPasswords(passwords: passwords, conn: state!.conn);
+          }
+          // [STICKER-SYNC] Fetch stickers after passwords sync completes.
+          // Both share the same keychain and call sync_keychain internally,
+          // so they must run sequentially to avoid lock contention.
+          final ck = state!.icloudServices?.cloudkitClient;
+          final kc = state!.icloudServices?.keychain;
+          if (ck != null && kc != null) {
+            // Incremental sync: pass the token persisted from the last sync so
+            // CloudKit only returns changed records. First launch (no token)
+            // downloads everything; later launches download just the delta.
+            final savedToken = ss.prefs.getString("stickerSyncToken");
+            api.fetchIcloudStickers(cloudkit: ck, keychain: kc, continuationToken: savedToken).then((json) async {
+              Logger.info("[STICKER-SYNC] Fetch complete", tag: "StickerSync");
+              try {
+                final data = jsonDecode(json);
+                final stickers = data['stickers'] as List<dynamic>? ?? [];
+                final deletions = (data['deletions'] as List<dynamic>? ?? []).cast<String>();
+                final newToken = data['token'] as String?;
+                Logger.info("[STICKER-SYNC] Got ${stickers.length} changed stickers, ${deletions.length} deletions", tag: "StickerSync");
+
+                final stickerDir = await fs.stickersDirectory;
+
+                // Apply deletions: remove the local PNG for any tombstoned record.
+                // Representation ids won't match a file (no-op), which is fine.
+                for (final id in deletions) {
+                  final f = File('$stickerDir/icloud_$id.png');
+                  if (await f.exists()) {
+                    await f.delete();
+                    Logger.info("[STICKER-SYNC] Deleted sticker $id", tag: "StickerSync");
+                  }
+                }
+
+                // Save sticker images to the stickers directory.
+                // HEIC stickers are converted to PNG at save time so the sticker
+                // picker can render them instantly via Image.memory instead of
+                // decoding HEIC on-demand (which is slow and serial).
+                //
+                // For animated (Live) stickers we ALSO save the raw HEIC sequence
+                // (.heics) next to the still PNG. The picker shows the still PNG
+                // as a fast thumbnail; the .heics is decoded to an animated APNG
+                // lazily (on-select), reusing the existing decode-heic-sequence
+                // pipeline, gated by the user's live-sticker setting.
+                int saved = 0;
+                for (final sticker in stickers) {
+                  final imageData = sticker['image_data'] as String?;
+                  final id = sticker['id'] as String? ?? '';
+                  final uti = sticker['uti'] as String? ?? 'public.png';
+                  if (imageData == null || imageData.isEmpty || id.isEmpty) continue;
+
+                  final isHeic = uti.contains('heic') || uti.contains('heif');
+                  final pngPath = '$stickerDir/icloud_$id.png';
+                  final pngFile = File(pngPath);
+
+                  // Save the animated .heics source (if present) alongside the
+                  // still. Cheap: just writes bytes, no decode at sync time.
+                  final isAnimated = sticker['is_animated'] == true;
+                  final animatedData = sticker['animated_data'] as String?;
+                  if (isAnimated && animatedData != null && animatedData.isNotEmpty) {
+                    final heicsPath = '$stickerDir/icloud_$id.heics';
+                    final heicsFile = File(heicsPath);
+                    if (!await heicsFile.exists()) {
+                      try {
+                        await heicsFile.writeAsBytes(base64Decode(animatedData));
+                      } catch (e) {
+                        Logger.warn("[STICKER-SYNC] Failed to save .heics for $id: $e", tag: "StickerSync");
+                      }
+                    }
+                  }
+
+                  // Skip the still PNG if we already have it
+                  if (await pngFile.exists()) continue;
+
+                  final bytes = base64Decode(imageData);
+
+                  if (isHeic) {
+                    // Write the HEIC to a temp file, decode to PNG via native
+                    // method channel, then keep only the PNG.
+                    final tmpHeic = File('$stickerDir/.icloud_$id.heic.tmp');
+                    try {
+                      await tmpHeic.writeAsBytes(bytes);
+                      await mcs.invokeMethod("decode-heif", {"file": tmpHeic.path, "output": pngPath});
+                      saved++;
+                    } catch (e) {
+                      Logger.warn("[STICKER-SYNC] HEIC decode failed for $id: $e", tag: "StickerSync");
+                    } finally {
+                      if (await tmpHeic.exists()) await tmpHeic.delete();
+                    }
+                  } else {
+                    // Already a displayable format (PNG); write directly.
+                    await pngFile.writeAsBytes(bytes);
+                    saved++;
+                  }
+                }
+                Logger.info("[STICKER-SYNC] Saved $saved new stickers to disk", tag: "StickerSync");
+
+                // Persist the new continuation token so the next sync is incremental.
+                if (newToken != null && newToken.isNotEmpty) {
+                  await ss.prefs.setString("stickerSyncToken", newToken);
+                }
+              } catch (e) {
+                Logger.warn("[STICKER-SYNC] Error processing stickers: $e", tag: "StickerSync");
+              }
+            }).catchError((e) {
+              Logger.warn("[STICKER-SYNC] Fetch error: $e", tag: "StickerSync");
+            });
           }
           if (ss.settings.cloudSyncingEnabled.value) {
             Logger.info("Doing cloudkit sync!");

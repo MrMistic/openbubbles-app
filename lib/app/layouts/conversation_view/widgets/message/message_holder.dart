@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:bluebubbles/app/components/custom/custom_bouncing_scroll_physics.dart';
 import 'package:bluebubbles/app/layouts/conversation_view/widgets/message/attachment/attachment_holder.dart';
+import 'package:bluebubbles/app/layouts/conversation_view/widgets/message/attachment/mosaic_widget.dart';
 import 'package:bluebubbles/app/layouts/conversation_view/widgets/message/attachment/sticker_holder.dart';
 import 'package:bluebubbles/app/layouts/conversation_view/widgets/message/chat_event/chat_event.dart';
 import 'package:bluebubbles/app/layouts/conversation_view/widgets/message/interactive/interactive_holder.dart';
@@ -176,10 +177,18 @@ class _MessageHolderState extends CustomState<MessageHolder, void, MessageWidget
     controller.built = true;
     final stickers = message.associatedMessages.where((e) => e.associatedMessageType == "sticker");
     final reactions = message.associatedMessages.where((e) => ReactionTypes.toList().contains(e.associatedMessageType?.replaceAll("-", "")));
-    Iterable<Message> stickersForPart(int part) {
+    Iterable<Message> stickersForPart(int part, [List<int>? carouselMap]) {
+      // For carousel parts, show stickers/reactions targeted at any of the
+      // underlying image parts (e.g. parts 0, 1, 2 collapsed into one visual).
+      if (carouselMap != null && carouselMap.isNotEmpty) {
+        return stickers.where((s) => carouselMap.contains(s.associatedMessagePart ?? 0));
+      }
       return stickers.where((s) => (s.associatedMessagePart ?? 0) == part);
     }
-    Iterable<Message> reactionsForPart(int part) {
+    Iterable<Message> reactionsForPart(int part, [List<int>? carouselMap]) {
+      if (carouselMap != null && carouselMap.isNotEmpty) {
+        return reactions.where((s) => carouselMap.contains(s.associatedMessagePart ?? 0));
+      }
       return reactions.where((s) => (s.associatedMessagePart ?? 0) == part);
     }
     /// Layout tree
@@ -307,7 +316,7 @@ class _MessageHolderState extends CustomState<MessageHolder, void, MessageWidget
                               child: MessageSender(olderMessage: olderMessage, message: message),
                             ),
                           // add a box to account for height of reactions
-                          if ((messageParts.length == 1 && reactions.isNotEmpty) || reactionsForPart(e.part).isNotEmpty)
+                          if ((messageParts.length == 1 && reactions.isNotEmpty) || reactionsForPart(e.part, e.attachmentPartMap).isNotEmpty)
                             const SizedBox(height: 12.5),
                           if (!iOS && index == 0 && !widget.isReplyThread
                               && olderMessage != null
@@ -386,7 +395,7 @@ class _MessageHolderState extends CustomState<MessageHolder, void, MessageWidget
                                               ),
                                             if (samsung)
                                               Padding(
-                                                padding: (messageParts.length == 1 && reactions.isNotEmpty) || reactionsForPart(e.part).isNotEmpty
+                                                padding: (messageParts.length == 1 && reactions.isNotEmpty) || reactionsForPart(e.part, e.attachmentPartMap).isNotEmpty
                                                     ? EdgeInsets.only(left: message.isFromMe! ? 0 : 10, right: message.isFromMe! ? 20 : 0)
                                                     : const EdgeInsets.only(right: 10),
                                                 child: MessageTimestamp(controller: controller, cvController: widget.cvController),
@@ -459,7 +468,12 @@ class _MessageHolderState extends CustomState<MessageHolder, void, MessageWidget
                                                               if (ReplyScope.maybeOf(context) != null) return;
                                                               final offset = replyOffsets[index];
                                                               if (offset.value.abs() >= SlideToReply.replyThreshold) {
-                                                                widget.cvController.replyToMessage = Tuple2(message, index);
+                                                                // For carousel parts, target the currently visible image
+                                                                // instead of the merged display part (always 0).
+                                                                final replyPart = e.attachmentPartMap.isEmpty
+                                                                    ? index
+                                                                    : e.partForCarouselIndex(controller.carouselPage.value);
+                                                                widget.cvController.replyToMessage = Tuple2(message, replyPart);
                                                               }
                                                               offset.value = 0;
                                                             },
@@ -488,6 +502,36 @@ class _MessageHolderState extends CustomState<MessageHolder, void, MessageWidget
                                                                       && (e.text != null || e.subject != null) ? TextBubble(
                                                                     parentController: controller,
                                                                     message: e,
+                                                                  ) : e.attachments.length >= 2
+                                                                      && e.attachments.every((a) => a.mimeStart == "image") ? MosaicWidget(
+                                                                    attachments: e.attachments,
+                                                                    message: message,
+                                                                    isFromMe: message.isFromMe!,
+                                                                    showTail: message.showTail(newerMessage) && e.part == controller.parts.length - 1,
+                                                                    controller: widget.cvController,
+                                                                    onTileDoubleTap: ss.settings.enableQuickTapback.value && widget.cvController.chat.isIMessage
+                                                                        ? (partIndex) {
+                                                                            HapticFeedback.lightImpact();
+                                                                            final reaction = ss.settings.quickTapbackType.value;
+                                                                            // Translate the carousel index to the original
+                                                                            // iMessage part index so the reaction targets the
+                                                                            // image the user actually double-tapped.
+                                                                            final realPart = e.partForCarouselIndex(partIndex);
+                                                                            outq.queue(OutgoingItem(
+                                                                              type: QueueType.sendMessage,
+                                                                              chat: widget.cvController.chat,
+                                                                              message: Message(
+                                                                                associatedMessageGuid: message.guid,
+                                                                                associatedMessageType: reaction,
+                                                                                associatedMessagePart: realPart,
+                                                                                dateCreated: DateTime.now(),
+                                                                                hasAttachments: false,
+                                                                                isFromMe: true,
+                                                                                handleId: 0,
+                                                                              ),
+                                                                            ));
+                                                                          }
+                                                                        : null,
                                                                   ) : e.attachments.isNotEmpty ? AttachmentHolder(
                                                                     parentController: controller,
                                                                     message: e,
@@ -684,9 +728,9 @@ class _MessageHolderState extends CustomState<MessageHolder, void, MessageWidget
                                                         ),
                                                       ),
                                                       // show stickers on top
-                                                      if ((messageParts.length == 1 ? stickers : stickersForPart(e.part)).isNotEmpty)
+                                                      if ((messageParts.length == 1 ? stickers : stickersForPart(e.part, e.attachmentPartMap)).isNotEmpty)
                                                         StickerHolder(
-                                                          stickerMessages: messageParts.length == 1 ? stickers : stickersForPart(e.part),
+                                                          stickerMessages: messageParts.length == 1 ? stickers : stickersForPart(e.part, e.attachmentPartMap),
                                                           controller: widget.cvController,
                                                         ),
                                                       // show reactions on top
@@ -695,7 +739,7 @@ class _MessageHolderState extends CustomState<MessageHolder, void, MessageWidget
                                                           top: -14,
                                                           left: -20,
                                                           child: ReactionHolder(
-                                                            reactions: messageParts.length == 1 ? reactions : reactionsForPart(e.part),
+                                                            reactions: messageParts.length == 1 ? reactions : reactionsForPart(e.part, e.attachmentPartMap),
                                                             message: message,
                                                           ),
                                                         ),
@@ -704,7 +748,7 @@ class _MessageHolderState extends CustomState<MessageHolder, void, MessageWidget
                                                           top: -14,
                                                           right: -20,
                                                           child: ReactionHolder(
-                                                            reactions: messageParts.length == 1 ? reactions : reactionsForPart(e.part),
+                                                            reactions: messageParts.length == 1 ? reactions : reactionsForPart(e.part, e.attachmentPartMap),
                                                             message: message,
                                                           ),
                                                         ),

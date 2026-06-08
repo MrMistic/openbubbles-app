@@ -14918,17 +14918,7 @@ abstract class NumOrString_Bool extends NumOrString {
 
 /// @nodoc
 mixin _$PartExtension {
-  double get msgWidth => throw _privateConstructorUsedError;
-  double get rotation => throw _privateConstructorUsedError;
-  BigInt get sai => throw _privateConstructorUsedError;
-  double get scale => throw _privateConstructorUsedError;
-  bool? get update => throw _privateConstructorUsedError;
-  BigInt get sli => throw _privateConstructorUsedError;
-  double get normalizedX => throw _privateConstructorUsedError;
-  double get normalizedY => throw _privateConstructorUsedError;
-  BigInt get version => throw _privateConstructorUsedError;
   String get hash => throw _privateConstructorUsedError;
-  BigInt get safi => throw _privateConstructorUsedError;
   int get effectType => throw _privateConstructorUsedError;
   String get stickerId => throw _privateConstructorUsedError;
   @optionalTypeArgs
@@ -14948,6 +14938,8 @@ mixin _$PartExtension {
             int effectType,
             String stickerId)
         sticker,
+    required TResult Function(String stickerId, String hash, int effectType)
+        standaloneSticker,
   }) =>
       throw _privateConstructorUsedError;
   @optionalTypeArgs
@@ -14967,6 +14959,8 @@ mixin _$PartExtension {
             int effectType,
             String stickerId)?
         sticker,
+    TResult? Function(String stickerId, String hash, int effectType)?
+        standaloneSticker,
   }) =>
       throw _privateConstructorUsedError;
   @optionalTypeArgs
@@ -14986,22 +14980,28 @@ mixin _$PartExtension {
             int effectType,
             String stickerId)?
         sticker,
+    TResult Function(String stickerId, String hash, int effectType)?
+        standaloneSticker,
     required TResult orElse(),
   }) =>
       throw _privateConstructorUsedError;
   @optionalTypeArgs
   TResult map<TResult extends Object?>({
     required TResult Function(PartExtension_Sticker value) sticker,
+    required TResult Function(PartExtension_StandaloneSticker value)
+        standaloneSticker,
   }) =>
       throw _privateConstructorUsedError;
   @optionalTypeArgs
   TResult? mapOrNull<TResult extends Object?>({
     TResult? Function(PartExtension_Sticker value)? sticker,
+    TResult? Function(PartExtension_StandaloneSticker value)? standaloneSticker,
   }) =>
       throw _privateConstructorUsedError;
   @optionalTypeArgs
   TResult maybeMap<TResult extends Object?>({
     TResult Function(PartExtension_Sticker value)? sticker,
+    TResult Function(PartExtension_StandaloneSticker value)? standaloneSticker,
     required TResult orElse(),
   }) =>
       throw _privateConstructorUsedError;
@@ -15019,20 +15019,7 @@ abstract class $PartExtensionCopyWith<$Res> {
           PartExtension value, $Res Function(PartExtension) then) =
       _$PartExtensionCopyWithImpl<$Res, PartExtension>;
   @useResult
-  $Res call(
-      {double msgWidth,
-      double rotation,
-      BigInt sai,
-      double scale,
-      bool? update,
-      BigInt sli,
-      double normalizedX,
-      double normalizedY,
-      BigInt version,
-      String hash,
-      BigInt safi,
-      int effectType,
-      String stickerId});
+  $Res call({String hash, int effectType, String stickerId});
 }
 
 /// @nodoc
@@ -15050,65 +15037,15 @@ class _$PartExtensionCopyWithImpl<$Res, $Val extends PartExtension>
   @pragma('vm:prefer-inline')
   @override
   $Res call({
-    Object? msgWidth = null,
-    Object? rotation = null,
-    Object? sai = null,
-    Object? scale = null,
-    Object? update = freezed,
-    Object? sli = null,
-    Object? normalizedX = null,
-    Object? normalizedY = null,
-    Object? version = null,
     Object? hash = null,
-    Object? safi = null,
     Object? effectType = null,
     Object? stickerId = null,
   }) {
     return _then(_value.copyWith(
-      msgWidth: null == msgWidth
-          ? _value.msgWidth
-          : msgWidth // ignore: cast_nullable_to_non_nullable
-              as double,
-      rotation: null == rotation
-          ? _value.rotation
-          : rotation // ignore: cast_nullable_to_non_nullable
-              as double,
-      sai: null == sai
-          ? _value.sai
-          : sai // ignore: cast_nullable_to_non_nullable
-              as BigInt,
-      scale: null == scale
-          ? _value.scale
-          : scale // ignore: cast_nullable_to_non_nullable
-              as double,
-      update: freezed == update
-          ? _value.update
-          : update // ignore: cast_nullable_to_non_nullable
-              as bool?,
-      sli: null == sli
-          ? _value.sli
-          : sli // ignore: cast_nullable_to_non_nullable
-              as BigInt,
-      normalizedX: null == normalizedX
-          ? _value.normalizedX
-          : normalizedX // ignore: cast_nullable_to_non_nullable
-              as double,
-      normalizedY: null == normalizedY
-          ? _value.normalizedY
-          : normalizedY // ignore: cast_nullable_to_non_nullable
-              as double,
-      version: null == version
-          ? _value.version
-          : version // ignore: cast_nullable_to_non_nullable
-              as BigInt,
       hash: null == hash
           ? _value.hash
           : hash // ignore: cast_nullable_to_non_nullable
               as String,
-      safi: null == safi
-          ? _value.safi
-          : safi // ignore: cast_nullable_to_non_nullable
-              as BigInt,
       effectType: null == effectType
           ? _value.effectType
           : effectType // ignore: cast_nullable_to_non_nullable
@@ -15351,6 +15288,8 @@ class _$PartExtension_StickerImpl extends PartExtension_Sticker {
             int effectType,
             String stickerId)
         sticker,
+    required TResult Function(String stickerId, String hash, int effectType)
+        standaloneSticker,
   }) {
     return sticker(msgWidth, rotation, sai, scale, update, sli, normalizedX,
         normalizedY, version, hash, safi, effectType, stickerId);
@@ -15374,6 +15313,8 @@ class _$PartExtension_StickerImpl extends PartExtension_Sticker {
             int effectType,
             String stickerId)?
         sticker,
+    TResult? Function(String stickerId, String hash, int effectType)?
+        standaloneSticker,
   }) {
     return sticker?.call(msgWidth, rotation, sai, scale, update, sli,
         normalizedX, normalizedY, version, hash, safi, effectType, stickerId);
@@ -15397,6 +15338,8 @@ class _$PartExtension_StickerImpl extends PartExtension_Sticker {
             int effectType,
             String stickerId)?
         sticker,
+    TResult Function(String stickerId, String hash, int effectType)?
+        standaloneSticker,
     required TResult orElse(),
   }) {
     if (sticker != null) {
@@ -15410,6 +15353,8 @@ class _$PartExtension_StickerImpl extends PartExtension_Sticker {
   @optionalTypeArgs
   TResult map<TResult extends Object?>({
     required TResult Function(PartExtension_Sticker value) sticker,
+    required TResult Function(PartExtension_StandaloneSticker value)
+        standaloneSticker,
   }) {
     return sticker(this);
   }
@@ -15418,6 +15363,7 @@ class _$PartExtension_StickerImpl extends PartExtension_Sticker {
   @optionalTypeArgs
   TResult? mapOrNull<TResult extends Object?>({
     TResult? Function(PartExtension_Sticker value)? sticker,
+    TResult? Function(PartExtension_StandaloneSticker value)? standaloneSticker,
   }) {
     return sticker?.call(this);
   }
@@ -15426,6 +15372,7 @@ class _$PartExtension_StickerImpl extends PartExtension_Sticker {
   @optionalTypeArgs
   TResult maybeMap<TResult extends Object?>({
     TResult Function(PartExtension_Sticker value)? sticker,
+    TResult Function(PartExtension_StandaloneSticker value)? standaloneSticker,
     required TResult orElse(),
   }) {
     if (sticker != null) {
@@ -15452,27 +15399,17 @@ abstract class PartExtension_Sticker extends PartExtension {
       required final String stickerId}) = _$PartExtension_StickerImpl;
   const PartExtension_Sticker._() : super._();
 
-  @override
   double get msgWidth;
-  @override
   double get rotation;
-  @override
   BigInt get sai;
-  @override
   double get scale;
-  @override
   bool? get update;
-  @override
   BigInt get sli;
-  @override
   double get normalizedX;
-  @override
   double get normalizedY;
-  @override
   BigInt get version;
   @override
   String get hash;
-  @override
   BigInt get safi;
   @override
   int get effectType;
@@ -15484,6 +15421,231 @@ abstract class PartExtension_Sticker extends PartExtension {
   @override
   @JsonKey(includeFromJson: false, includeToJson: false)
   _$$PartExtension_StickerImplCopyWith<_$PartExtension_StickerImpl>
+      get copyWith => throw _privateConstructorUsedError;
+}
+
+/// @nodoc
+abstract class _$$PartExtension_StandaloneStickerImplCopyWith<$Res>
+    implements $PartExtensionCopyWith<$Res> {
+  factory _$$PartExtension_StandaloneStickerImplCopyWith(
+          _$PartExtension_StandaloneStickerImpl value,
+          $Res Function(_$PartExtension_StandaloneStickerImpl) then) =
+      __$$PartExtension_StandaloneStickerImplCopyWithImpl<$Res>;
+  @override
+  @useResult
+  $Res call({String stickerId, String hash, int effectType});
+}
+
+/// @nodoc
+class __$$PartExtension_StandaloneStickerImplCopyWithImpl<$Res>
+    extends _$PartExtensionCopyWithImpl<$Res,
+        _$PartExtension_StandaloneStickerImpl>
+    implements _$$PartExtension_StandaloneStickerImplCopyWith<$Res> {
+  __$$PartExtension_StandaloneStickerImplCopyWithImpl(
+      _$PartExtension_StandaloneStickerImpl _value,
+      $Res Function(_$PartExtension_StandaloneStickerImpl) _then)
+      : super(_value, _then);
+
+  /// Create a copy of PartExtension
+  /// with the given fields replaced by the non-null parameter values.
+  @pragma('vm:prefer-inline')
+  @override
+  $Res call({
+    Object? stickerId = null,
+    Object? hash = null,
+    Object? effectType = null,
+  }) {
+    return _then(_$PartExtension_StandaloneStickerImpl(
+      stickerId: null == stickerId
+          ? _value.stickerId
+          : stickerId // ignore: cast_nullable_to_non_nullable
+              as String,
+      hash: null == hash
+          ? _value.hash
+          : hash // ignore: cast_nullable_to_non_nullable
+              as String,
+      effectType: null == effectType
+          ? _value.effectType
+          : effectType // ignore: cast_nullable_to_non_nullable
+              as int,
+    ));
+  }
+}
+
+/// @nodoc
+
+class _$PartExtension_StandaloneStickerImpl
+    extends PartExtension_StandaloneSticker {
+  const _$PartExtension_StandaloneStickerImpl(
+      {required this.stickerId, required this.hash, required this.effectType})
+      : super._();
+
+  @override
+  final String stickerId;
+  @override
+  final String hash;
+  @override
+  final int effectType;
+
+  @override
+  String toString() {
+    return 'PartExtension.standaloneSticker(stickerId: $stickerId, hash: $hash, effectType: $effectType)';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        (other.runtimeType == runtimeType &&
+            other is _$PartExtension_StandaloneStickerImpl &&
+            (identical(other.stickerId, stickerId) ||
+                other.stickerId == stickerId) &&
+            (identical(other.hash, hash) || other.hash == hash) &&
+            (identical(other.effectType, effectType) ||
+                other.effectType == effectType));
+  }
+
+  @override
+  int get hashCode => Object.hash(runtimeType, stickerId, hash, effectType);
+
+  /// Create a copy of PartExtension
+  /// with the given fields replaced by the non-null parameter values.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  @pragma('vm:prefer-inline')
+  _$$PartExtension_StandaloneStickerImplCopyWith<
+          _$PartExtension_StandaloneStickerImpl>
+      get copyWith => __$$PartExtension_StandaloneStickerImplCopyWithImpl<
+          _$PartExtension_StandaloneStickerImpl>(this, _$identity);
+
+  @override
+  @optionalTypeArgs
+  TResult when<TResult extends Object?>({
+    required TResult Function(
+            double msgWidth,
+            double rotation,
+            BigInt sai,
+            double scale,
+            bool? update,
+            BigInt sli,
+            double normalizedX,
+            double normalizedY,
+            BigInt version,
+            String hash,
+            BigInt safi,
+            int effectType,
+            String stickerId)
+        sticker,
+    required TResult Function(String stickerId, String hash, int effectType)
+        standaloneSticker,
+  }) {
+    return standaloneSticker(stickerId, hash, effectType);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult? whenOrNull<TResult extends Object?>({
+    TResult? Function(
+            double msgWidth,
+            double rotation,
+            BigInt sai,
+            double scale,
+            bool? update,
+            BigInt sli,
+            double normalizedX,
+            double normalizedY,
+            BigInt version,
+            String hash,
+            BigInt safi,
+            int effectType,
+            String stickerId)?
+        sticker,
+    TResult? Function(String stickerId, String hash, int effectType)?
+        standaloneSticker,
+  }) {
+    return standaloneSticker?.call(stickerId, hash, effectType);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult maybeWhen<TResult extends Object?>({
+    TResult Function(
+            double msgWidth,
+            double rotation,
+            BigInt sai,
+            double scale,
+            bool? update,
+            BigInt sli,
+            double normalizedX,
+            double normalizedY,
+            BigInt version,
+            String hash,
+            BigInt safi,
+            int effectType,
+            String stickerId)?
+        sticker,
+    TResult Function(String stickerId, String hash, int effectType)?
+        standaloneSticker,
+    required TResult orElse(),
+  }) {
+    if (standaloneSticker != null) {
+      return standaloneSticker(stickerId, hash, effectType);
+    }
+    return orElse();
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult map<TResult extends Object?>({
+    required TResult Function(PartExtension_Sticker value) sticker,
+    required TResult Function(PartExtension_StandaloneSticker value)
+        standaloneSticker,
+  }) {
+    return standaloneSticker(this);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult? mapOrNull<TResult extends Object?>({
+    TResult? Function(PartExtension_Sticker value)? sticker,
+    TResult? Function(PartExtension_StandaloneSticker value)? standaloneSticker,
+  }) {
+    return standaloneSticker?.call(this);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult maybeMap<TResult extends Object?>({
+    TResult Function(PartExtension_Sticker value)? sticker,
+    TResult Function(PartExtension_StandaloneSticker value)? standaloneSticker,
+    required TResult orElse(),
+  }) {
+    if (standaloneSticker != null) {
+      return standaloneSticker(this);
+    }
+    return orElse();
+  }
+}
+
+abstract class PartExtension_StandaloneSticker extends PartExtension {
+  const factory PartExtension_StandaloneSticker(
+      {required final String stickerId,
+      required final String hash,
+      required final int effectType}) = _$PartExtension_StandaloneStickerImpl;
+  const PartExtension_StandaloneSticker._() : super._();
+
+  @override
+  String get stickerId;
+  @override
+  String get hash;
+  @override
+  int get effectType;
+
+  /// Create a copy of PartExtension
+  /// with the given fields replaced by the non-null parameter values.
+  @override
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  _$$PartExtension_StandaloneStickerImplCopyWith<
+          _$PartExtension_StandaloneStickerImpl>
       get copyWith => throw _privateConstructorUsedError;
 }
 
@@ -22668,23 +22830,23 @@ abstract class SetTranscriptBackgroundMessage_Set
 
 /// @nodoc
 mixin _$StatusKitMessage {
-  String get user => throw _privateConstructorUsedError;
-  String? get mode => throw _privateConstructorUsedError;
-  bool get allowed => throw _privateConstructorUsedError;
   @optionalTypeArgs
   TResult when<TResult extends Object?>({
     required TResult Function(String user, String? mode, bool allowed)
         statusChanged,
+    required TResult Function(List<String> activeModes) focusSyncChanged,
   }) =>
       throw _privateConstructorUsedError;
   @optionalTypeArgs
   TResult? whenOrNull<TResult extends Object?>({
     TResult? Function(String user, String? mode, bool allowed)? statusChanged,
+    TResult? Function(List<String> activeModes)? focusSyncChanged,
   }) =>
       throw _privateConstructorUsedError;
   @optionalTypeArgs
   TResult maybeWhen<TResult extends Object?>({
     TResult Function(String user, String? mode, bool allowed)? statusChanged,
+    TResult Function(List<String> activeModes)? focusSyncChanged,
     required TResult orElse(),
   }) =>
       throw _privateConstructorUsedError;
@@ -22692,24 +22854,23 @@ mixin _$StatusKitMessage {
   TResult map<TResult extends Object?>({
     required TResult Function(StatusKitMessage_StatusChanged value)
         statusChanged,
+    required TResult Function(StatusKitMessage_FocusSyncChanged value)
+        focusSyncChanged,
   }) =>
       throw _privateConstructorUsedError;
   @optionalTypeArgs
   TResult? mapOrNull<TResult extends Object?>({
     TResult? Function(StatusKitMessage_StatusChanged value)? statusChanged,
+    TResult? Function(StatusKitMessage_FocusSyncChanged value)?
+        focusSyncChanged,
   }) =>
       throw _privateConstructorUsedError;
   @optionalTypeArgs
   TResult maybeMap<TResult extends Object?>({
     TResult Function(StatusKitMessage_StatusChanged value)? statusChanged,
+    TResult Function(StatusKitMessage_FocusSyncChanged value)? focusSyncChanged,
     required TResult orElse(),
   }) =>
-      throw _privateConstructorUsedError;
-
-  /// Create a copy of StatusKitMessage
-  /// with the given fields replaced by the non-null parameter values.
-  @JsonKey(includeFromJson: false, includeToJson: false)
-  $StatusKitMessageCopyWith<StatusKitMessage> get copyWith =>
       throw _privateConstructorUsedError;
 }
 
@@ -22718,8 +22879,6 @@ abstract class $StatusKitMessageCopyWith<$Res> {
   factory $StatusKitMessageCopyWith(
           StatusKitMessage value, $Res Function(StatusKitMessage) then) =
       _$StatusKitMessageCopyWithImpl<$Res, StatusKitMessage>;
-  @useResult
-  $Res call({String user, String? mode, bool allowed});
 }
 
 /// @nodoc
@@ -22734,38 +22893,14 @@ class _$StatusKitMessageCopyWithImpl<$Res, $Val extends StatusKitMessage>
 
   /// Create a copy of StatusKitMessage
   /// with the given fields replaced by the non-null parameter values.
-  @pragma('vm:prefer-inline')
-  @override
-  $Res call({
-    Object? user = null,
-    Object? mode = freezed,
-    Object? allowed = null,
-  }) {
-    return _then(_value.copyWith(
-      user: null == user
-          ? _value.user
-          : user // ignore: cast_nullable_to_non_nullable
-              as String,
-      mode: freezed == mode
-          ? _value.mode
-          : mode // ignore: cast_nullable_to_non_nullable
-              as String?,
-      allowed: null == allowed
-          ? _value.allowed
-          : allowed // ignore: cast_nullable_to_non_nullable
-              as bool,
-    ) as $Val);
-  }
 }
 
 /// @nodoc
-abstract class _$$StatusKitMessage_StatusChangedImplCopyWith<$Res>
-    implements $StatusKitMessageCopyWith<$Res> {
+abstract class _$$StatusKitMessage_StatusChangedImplCopyWith<$Res> {
   factory _$$StatusKitMessage_StatusChangedImplCopyWith(
           _$StatusKitMessage_StatusChangedImpl value,
           $Res Function(_$StatusKitMessage_StatusChangedImpl) then) =
       __$$StatusKitMessage_StatusChangedImplCopyWithImpl<$Res>;
-  @override
   @useResult
   $Res call({String user, String? mode, bool allowed});
 }
@@ -22854,6 +22989,7 @@ class _$StatusKitMessage_StatusChangedImpl
   TResult when<TResult extends Object?>({
     required TResult Function(String user, String? mode, bool allowed)
         statusChanged,
+    required TResult Function(List<String> activeModes) focusSyncChanged,
   }) {
     return statusChanged(user, mode, allowed);
   }
@@ -22862,6 +22998,7 @@ class _$StatusKitMessage_StatusChangedImpl
   @optionalTypeArgs
   TResult? whenOrNull<TResult extends Object?>({
     TResult? Function(String user, String? mode, bool allowed)? statusChanged,
+    TResult? Function(List<String> activeModes)? focusSyncChanged,
   }) {
     return statusChanged?.call(user, mode, allowed);
   }
@@ -22870,6 +23007,7 @@ class _$StatusKitMessage_StatusChangedImpl
   @optionalTypeArgs
   TResult maybeWhen<TResult extends Object?>({
     TResult Function(String user, String? mode, bool allowed)? statusChanged,
+    TResult Function(List<String> activeModes)? focusSyncChanged,
     required TResult orElse(),
   }) {
     if (statusChanged != null) {
@@ -22883,6 +23021,8 @@ class _$StatusKitMessage_StatusChangedImpl
   TResult map<TResult extends Object?>({
     required TResult Function(StatusKitMessage_StatusChanged value)
         statusChanged,
+    required TResult Function(StatusKitMessage_FocusSyncChanged value)
+        focusSyncChanged,
   }) {
     return statusChanged(this);
   }
@@ -22891,6 +23031,8 @@ class _$StatusKitMessage_StatusChangedImpl
   @optionalTypeArgs
   TResult? mapOrNull<TResult extends Object?>({
     TResult? Function(StatusKitMessage_StatusChanged value)? statusChanged,
+    TResult? Function(StatusKitMessage_FocusSyncChanged value)?
+        focusSyncChanged,
   }) {
     return statusChanged?.call(this);
   }
@@ -22899,6 +23041,7 @@ class _$StatusKitMessage_StatusChangedImpl
   @optionalTypeArgs
   TResult maybeMap<TResult extends Object?>({
     TResult Function(StatusKitMessage_StatusChanged value)? statusChanged,
+    TResult Function(StatusKitMessage_FocusSyncChanged value)? focusSyncChanged,
     required TResult orElse(),
   }) {
     if (statusChanged != null) {
@@ -22915,19 +23058,179 @@ abstract class StatusKitMessage_StatusChanged extends StatusKitMessage {
       required final bool allowed}) = _$StatusKitMessage_StatusChangedImpl;
   const StatusKitMessage_StatusChanged._() : super._();
 
-  @override
   String get user;
-  @override
   String? get mode;
-  @override
   bool get allowed;
 
   /// Create a copy of StatusKitMessage
   /// with the given fields replaced by the non-null parameter values.
-  @override
   @JsonKey(includeFromJson: false, includeToJson: false)
   _$$StatusKitMessage_StatusChangedImplCopyWith<
           _$StatusKitMessage_StatusChangedImpl>
+      get copyWith => throw _privateConstructorUsedError;
+}
+
+/// @nodoc
+abstract class _$$StatusKitMessage_FocusSyncChangedImplCopyWith<$Res> {
+  factory _$$StatusKitMessage_FocusSyncChangedImplCopyWith(
+          _$StatusKitMessage_FocusSyncChangedImpl value,
+          $Res Function(_$StatusKitMessage_FocusSyncChangedImpl) then) =
+      __$$StatusKitMessage_FocusSyncChangedImplCopyWithImpl<$Res>;
+  @useResult
+  $Res call({List<String> activeModes});
+}
+
+/// @nodoc
+class __$$StatusKitMessage_FocusSyncChangedImplCopyWithImpl<$Res>
+    extends _$StatusKitMessageCopyWithImpl<$Res,
+        _$StatusKitMessage_FocusSyncChangedImpl>
+    implements _$$StatusKitMessage_FocusSyncChangedImplCopyWith<$Res> {
+  __$$StatusKitMessage_FocusSyncChangedImplCopyWithImpl(
+      _$StatusKitMessage_FocusSyncChangedImpl _value,
+      $Res Function(_$StatusKitMessage_FocusSyncChangedImpl) _then)
+      : super(_value, _then);
+
+  /// Create a copy of StatusKitMessage
+  /// with the given fields replaced by the non-null parameter values.
+  @pragma('vm:prefer-inline')
+  @override
+  $Res call({
+    Object? activeModes = null,
+  }) {
+    return _then(_$StatusKitMessage_FocusSyncChangedImpl(
+      activeModes: null == activeModes
+          ? _value._activeModes
+          : activeModes // ignore: cast_nullable_to_non_nullable
+              as List<String>,
+    ));
+  }
+}
+
+/// @nodoc
+
+class _$StatusKitMessage_FocusSyncChangedImpl
+    extends StatusKitMessage_FocusSyncChanged {
+  const _$StatusKitMessage_FocusSyncChangedImpl(
+      {required final List<String> activeModes})
+      : _activeModes = activeModes,
+        super._();
+
+  final List<String> _activeModes;
+  @override
+  List<String> get activeModes {
+    if (_activeModes is EqualUnmodifiableListView) return _activeModes;
+    // ignore: implicit_dynamic_type
+    return EqualUnmodifiableListView(_activeModes);
+  }
+
+  @override
+  String toString() {
+    return 'StatusKitMessage.focusSyncChanged(activeModes: $activeModes)';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        (other.runtimeType == runtimeType &&
+            other is _$StatusKitMessage_FocusSyncChangedImpl &&
+            const DeepCollectionEquality()
+                .equals(other._activeModes, _activeModes));
+  }
+
+  @override
+  int get hashCode => Object.hash(
+      runtimeType, const DeepCollectionEquality().hash(_activeModes));
+
+  /// Create a copy of StatusKitMessage
+  /// with the given fields replaced by the non-null parameter values.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  @pragma('vm:prefer-inline')
+  _$$StatusKitMessage_FocusSyncChangedImplCopyWith<
+          _$StatusKitMessage_FocusSyncChangedImpl>
+      get copyWith => __$$StatusKitMessage_FocusSyncChangedImplCopyWithImpl<
+          _$StatusKitMessage_FocusSyncChangedImpl>(this, _$identity);
+
+  @override
+  @optionalTypeArgs
+  TResult when<TResult extends Object?>({
+    required TResult Function(String user, String? mode, bool allowed)
+        statusChanged,
+    required TResult Function(List<String> activeModes) focusSyncChanged,
+  }) {
+    return focusSyncChanged(activeModes);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult? whenOrNull<TResult extends Object?>({
+    TResult? Function(String user, String? mode, bool allowed)? statusChanged,
+    TResult? Function(List<String> activeModes)? focusSyncChanged,
+  }) {
+    return focusSyncChanged?.call(activeModes);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult maybeWhen<TResult extends Object?>({
+    TResult Function(String user, String? mode, bool allowed)? statusChanged,
+    TResult Function(List<String> activeModes)? focusSyncChanged,
+    required TResult orElse(),
+  }) {
+    if (focusSyncChanged != null) {
+      return focusSyncChanged(activeModes);
+    }
+    return orElse();
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult map<TResult extends Object?>({
+    required TResult Function(StatusKitMessage_StatusChanged value)
+        statusChanged,
+    required TResult Function(StatusKitMessage_FocusSyncChanged value)
+        focusSyncChanged,
+  }) {
+    return focusSyncChanged(this);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult? mapOrNull<TResult extends Object?>({
+    TResult? Function(StatusKitMessage_StatusChanged value)? statusChanged,
+    TResult? Function(StatusKitMessage_FocusSyncChanged value)?
+        focusSyncChanged,
+  }) {
+    return focusSyncChanged?.call(this);
+  }
+
+  @override
+  @optionalTypeArgs
+  TResult maybeMap<TResult extends Object?>({
+    TResult Function(StatusKitMessage_StatusChanged value)? statusChanged,
+    TResult Function(StatusKitMessage_FocusSyncChanged value)? focusSyncChanged,
+    required TResult orElse(),
+  }) {
+    if (focusSyncChanged != null) {
+      return focusSyncChanged(this);
+    }
+    return orElse();
+  }
+}
+
+abstract class StatusKitMessage_FocusSyncChanged extends StatusKitMessage {
+  const factory StatusKitMessage_FocusSyncChanged(
+          {required final List<String> activeModes}) =
+      _$StatusKitMessage_FocusSyncChangedImpl;
+  const StatusKitMessage_FocusSyncChanged._() : super._();
+
+  List<String> get activeModes;
+
+  /// Create a copy of StatusKitMessage
+  /// with the given fields replaced by the non-null parameter values.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  _$$StatusKitMessage_FocusSyncChangedImplCopyWith<
+          _$StatusKitMessage_FocusSyncChangedImpl>
       get copyWith => throw _privateConstructorUsedError;
 }
 

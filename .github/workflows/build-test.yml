@@ -46,7 +46,16 @@ jobs:
 
       - name: Set up stable debug keystore
         run: |
-          echo "${{ secrets.DEBUG_KEYSTORE }}" | base64 -d > /home/runner/.android/debug.keystore
+          mkdir -p /home/runner/keystore
+          echo "${{ secrets.DEBUG_KEYSTORE }}" | base64 -d > /home/runner/keystore/debug.keystore
+          echo "STABLE_DEBUG_KEYSTORE=/home/runner/keystore/debug.keystore" >> "$GITHUB_ENV"
+
+      - name: Verify debug keystore
+        run: |
+          ls -la /home/runner/keystore/debug.keystore
+          echo "--- keytool output ---"
+          keytool -list -v -keystore /home/runner/keystore/debug.keystore -storepass android -alias androiddebugkey 2>&1 | grep -E "Alias name|SHA1|SHA256|Owner|Valid from"
+          echo "--- exit code: $? ---"
 
       - name: Set up FairPlay keys from secrets
         run: |
@@ -71,8 +80,16 @@ jobs:
           done
 
       - name: Run Build Script
+        env:
+          CARGO_NET_RETRY: "5"
+          CARGO_HTTP_TIMEOUT: "120"
         run: |
           flutter build apk --flavor alpha --debug --target-platform android-arm64
+
+      - name: Print APK signing certificate
+        run: |
+          echo "--- APK signing certificate ---"
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | tail -n1)/apksigner verify --print-certs build/app/outputs/flutter-apk/app-alpha-debug.apk | grep -E "SHA-256|SHA-1|Subject"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -978,7 +978,17 @@ pub enum DartPartExtension {
         safi: u64,
         effect_type: i64,
         sticker_id: String,
-    }
+    },
+    /// Standalone sticker send (a sticker sent as a new message, not placed on
+    /// an existing message). Carries the minimal sticker user-info the
+    /// recipient uses to classify the attachment as a sticker
+    /// (sid/shash/stickerEffectType + pid), but NONE of the positioning
+    /// attributes. Also drives `message-part` omission on the FILE element.
+    StandaloneSticker {
+        sticker_id: String,
+        hash: String,
+        effect_type: i64,
+    },
 }
 
 pub use rustpush::findmy::{BeaconNamingRecord, LocationReport};

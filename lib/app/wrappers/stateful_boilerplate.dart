@@ -60,21 +60,22 @@ abstract class CustomState<T extends CustomStateful, R, S extends StatefulContro
     // complete the completer when we know the page animation has finished
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
       if (!mounted) return;
-      if (ModalRoute.of(context)?.animation != null) {
-        if (ModalRoute.of(context)?.animation?.status != AnimationStatus.completed) {
+      final route = ModalRoute.of(context);
+      if (route?.animation != null) {
+        if (route?.animation?.status != AnimationStatus.completed) {
           late final AnimationStatusListener listener;
           listener = (AnimationStatus status) {
             if (status == AnimationStatus.completed) {
-              animCompleted.complete();
-              ModalRoute.of(context)?.animation?.removeStatusListener(listener);
+              if (!animCompleted.isCompleted) animCompleted.complete();
+              route?.animation?.removeStatusListener(listener);
             }
           };
-          ModalRoute.of(context)?.animation?.addStatusListener(listener);
+          route?.animation?.addStatusListener(listener);
         } else {
-          animCompleted.complete();
+          if (!animCompleted.isCompleted) animCompleted.complete();
         }
       } else {
-        animCompleted.complete();
+        if (!animCompleted.isCompleted) animCompleted.complete();
       }
     });
   }

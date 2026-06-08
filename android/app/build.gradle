@@ -64,7 +64,19 @@ android {
             storePassword keystoreProperties['storePassword']
         }
         debug {
-
+            // Explicitly pin the debug keystore so the Android Gradle Plugin uses the
+            // stable keystore we provision. Without this, AGP auto-generates a throwaway
+            // debug key per build, producing APKs that can't update in-place.
+            //
+            // Resolution order:
+            //   1. STABLE_DEBUG_KEYSTORE env var (set in CI to the provisioned keystore)
+            //   2. ~/.android/debug.keystore (standard local location)
+            def stableKeystore = System.getenv("STABLE_DEBUG_KEYSTORE")
+                ?: (System.getProperty("user.home") + "/.android/debug.keystore")
+            storeFile file(stableKeystore)
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
         }
     }
 
@@ -121,7 +133,6 @@ android {
             productFlavors.alpha.signingConfig signingConfigs.debug
             productFlavors.beta.signingConfig signingConfigs.release
             productFlavors.prod.signingConfig signingConfigs.release
-            productFlavors.alpha.signingConfig signingConfigs.release
             minifyEnabled false
             shrinkResources false
         }

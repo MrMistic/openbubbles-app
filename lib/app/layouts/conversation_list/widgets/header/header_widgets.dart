@@ -4,6 +4,7 @@ import 'package:bluebubbles/app/layouts/conversation_list/pages/search/search_vi
 import 'package:bluebubbles/app/layouts/conversation_view/pages/conversation_view.dart';
 import 'package:bluebubbles/app/layouts/findmy/findmy_page.dart';
 import 'package:bluebubbles/app/layouts/facetime/facetime.dart';
+import 'package:bluebubbles/app/layouts/notes/notes_list_page.dart';
 import 'package:bluebubbles/app/layouts/settings/pages/misc/shared_streams_panel.dart';
 import 'package:bluebubbles/app/layouts/settings/pages/passwords/passwords_panel.dart';
 import 'package:bluebubbles/app/layouts/settings/pages/profile/profile_panel.dart';
@@ -23,6 +24,7 @@ import 'package:flutter_acrylic/flutter_acrylic.dart';
 import 'package:get/get.dart';
 import 'package:pull_down_button/pull_down_button.dart';
 import 'package:bluebubbles/services/network/backend_service.dart';
+import 'package:bluebubbles/src/rust/api/api.dart' show publishSecureLocation, testSendMappingPacket, testProbeFmipBridge, testProbeFmipSign, testRegisterIdentityV5;
 
 class HeaderText extends StatelessWidget {
   const HeaderText({Key? key, required this.controller, this.fontSize});
@@ -132,6 +134,16 @@ class MaterialOverflowMenu extends StatelessWidget {
           goToFaceTime(context);
         } else if (value == 11) {
           goToPasswords(context);
+        } else if (value == 12) {
+          testPublishSecureLocation(context);
+        } else if (value == 13) {
+          testSendMappingPacketUI(context);
+        } else if (value == 14) {
+          testProbeFmipBridgeUI(context);
+        } else if (value == 15) {
+          testProbeFmipSignUI(context);
+        } else if (value == 16) {
+          testRegisterIdentityV5UI(context);
         }
       },
       itemBuilder: (context) {
@@ -173,7 +185,47 @@ class MaterialOverflowMenu extends StatelessWidget {
                 style: context.textTheme.bodyLarge!.apply(color: context.theme.colorScheme.properOnSurface),
               ),
             ),
-          if (pushService.state?.icloudServices?.sharedstreams != null)
+          if (pushService.state?.icloudServices?.fmfd != null)
+            PopupMenuItem(
+              value: 12,
+              child: Text(
+                'Publish Location',
+                style: context.textTheme.bodyLarge!.apply(color: context.theme.colorScheme.properOnSurface),
+              ),
+            ),
+          if (pushService.state?.icloudServices?.fmfd != null)
+            PopupMenuItem(
+              value: 13,
+              child: Text(
+                'Send MappingPacket',
+                style: context.textTheme.bodyLarge!.apply(color: context.theme.colorScheme.properOnSurface),
+              ),
+            ),
+          if (pushService.state?.icloudServices?.fmfd != null)
+            PopupMenuItem(
+              value: 14,
+              child: Text(
+                'Probe fmip Bridge',
+                style: context.textTheme.bodyLarge!.apply(color: context.theme.colorScheme.properOnSurface),
+              ),
+            ),
+          if (pushService.state?.icloudServices?.fmfd != null)
+            PopupMenuItem(
+              value: 15,
+              child: Text(
+                'Probe fmip Sign (DIAG)',
+                style: context.textTheme.bodyLarge!.apply(color: context.theme.colorScheme.properOnSurface),
+              ),
+            ),
+          if (pushService.state?.icloudServices?.fmfd != null)
+            PopupMenuItem(
+              value: 16,
+              child: Text(
+                'Register identityV5',
+                style: context.textTheme.bodyLarge!.apply(color: context.theme.colorScheme.properOnSurface),
+              ),
+            ),
+          if (pushService.state?.icloudServices?.sharedstreams != null || const bool.fromEnvironment('SHOW_CREATE_ALBUM'))
             PopupMenuItem(
               value: 9,
               child: Text(
@@ -323,11 +375,47 @@ class CupertinoOverflowMenu extends StatelessWidget {
             icon: CupertinoIcons.location,
             onTap: () => goToFindMy(context),
           ),
-        if (pushService.state?.icloudServices?.sharedstreams != null)
+        if (pushService.state?.icloudServices?.fmfd != null)
+          PullDownMenuItem(
+            title: 'Publish Location',
+            icon: CupertinoIcons.location_fill,
+            onTap: () => testPublishSecureLocation(context),
+          ),
+        if (pushService.state?.icloudServices?.fmfd != null)
+          PullDownMenuItem(
+            title: 'Send MappingPacket',
+            icon: CupertinoIcons.paperplane_fill,
+            onTap: () => testSendMappingPacketUI(context),
+          ),
+        if (pushService.state?.icloudServices?.fmfd != null)
+          PullDownMenuItem(
+            title: 'Probe fmip Bridge',
+            icon: CupertinoIcons.wrench_fill,
+            onTap: () => testProbeFmipBridgeUI(context),
+          ),
+        if (pushService.state?.icloudServices?.fmfd != null)
+          PullDownMenuItem(
+            title: 'Probe fmip Sign (DIAG)',
+            icon: CupertinoIcons.signature,
+            onTap: () => testProbeFmipSignUI(context),
+          ),
+        if (pushService.state?.icloudServices?.fmfd != null)
+          PullDownMenuItem(
+            title: 'Register identityV5',
+            icon: CupertinoIcons.lock_rotation,
+            onTap: () => testRegisterIdentityV5UI(context),
+          ),
+        if (pushService.state?.icloudServices?.sharedstreams != null || const bool.fromEnvironment('SHOW_CREATE_ALBUM'))
           PullDownMenuItem(
             title: 'Shared Albums',
             icon: CupertinoIcons.photo,
             onTap: () => goToSharedStreams(context),
+          ),
+        if (pushService.state?.icloudServices?.cloudkitClient != null)
+          PullDownMenuItem(
+            title: 'iCloud Notes',
+            icon: Icons.note_outlined,
+            onTap: () => goToNotes(context),
           ),
         PullDownMenuItem(
           title: 'Video Calls',
@@ -497,6 +585,120 @@ Future<void> goToFindMy(BuildContext context) async {
     ThemeSwitcher.buildPageRoute(
       builder: (BuildContext context) {
         return FindMyPage();
+      },
+    ),
+  );
+  if (currentChat != null) {
+    await cm.setActiveChat(currentChat);
+    if (ss.settings.tabletMode.value) {
+      ns.pushAndRemoveUntil(
+        context,
+        ConversationView(
+          chat: currentChat,
+        ),
+            (route) => route.isFirst,
+      );
+    } else {
+      cvc(currentChat).close();
+    }
+  }
+}
+
+Future<void> testPublishSecureLocation(BuildContext context) async {
+  final fmfd = pushService.state?.icloudServices?.fmfd;
+  if (fmfd == null) {
+    showSnackbar("Error", "FindMy client not available");
+    return;
+  }
+  showSnackbar("Publishing", "Sending Montreal to People surface...");
+  try {
+    await publishSecureLocation(
+      fmfd: fmfd,
+      latitude: 45.5017,
+      longitude: -73.5673,
+      altitude: 50.0,
+      horizontalAccuracy: 10.0,
+      verticalAccuracy: 5.0,
+      speed: 0.0,
+      course: 0.0,
+    );
+    showSnackbar("Success", "publish_secure_location completed!");
+  } catch (e) {
+    showSnackbar("Error", "publish_secure_location failed: $e");
+  }
+}
+
+Future<void> testSendMappingPacketUI(BuildContext context) async {
+  final fmfd = pushService.state?.icloudServices?.fmfd;
+  if (fmfd == null) {
+    showSnackbar("Error", "FindMy client not available");
+    return;
+  }
+  showSnackbar("MappingPacket", "Sending to first follower...");
+  try {
+    final result = await testSendMappingPacket(fmfd: fmfd);
+    showSnackbar("MappingPacket Result", result);
+  } catch (e) {
+    showSnackbar("MappingPacket Error", "$e");
+  }
+}
+
+Future<void> testProbeFmipBridgeUI(BuildContext context) async {
+  final fmfd = pushService.state?.icloudServices?.fmfd;
+  if (fmfd == null) {
+    showSnackbar("Error", "FindMy client not available");
+    return;
+  }
+  showSnackbar("fmip Probe", "Reading PCRT + hardware descriptor (read-only)...");
+  try {
+    final result = await testProbeFmipBridge(fmfd: fmfd);
+    // Full field-by-field detail is in the rust log ([FMF-IDV5]); snackbar is a summary.
+    showSnackbar("fmip Probe Result", result);
+  } catch (e) {
+    showSnackbar("fmip Probe Error", "$e");
+  }
+}
+
+Future<void> testProbeFmipSignUI(BuildContext context) async {
+  final fmfd = pushService.state?.icloudServices?.fmfd;
+  if (fmfd == null) {
+    showSnackbar("Error", "FindMy client not available");
+    return;
+  }
+  showSnackbar("fmip Sign DIAG", "Sending dummy digest to relay fmip-sign (nothing signed for real)...");
+  try {
+    final result = await testProbeFmipSign(fmfd: fmfd);
+    // The relay-side DIAG echo (raw `data=` wire shape) is in the rust log ([FMF-IDV5]);
+    // snackbar is a summary. See IDENTITYV5_PLAN.md piece-1 audit Issue A.
+    showSnackbar("fmip Sign DIAG Result", result);
+  } catch (e) {
+    showSnackbar("fmip Sign DIAG Error", "$e");
+  }
+}
+
+Future<void> testRegisterIdentityV5UI(BuildContext context) async {
+  final fmfd = pushService.state?.icloudServices?.fmfd;
+  if (fmfd == null) {
+    showSnackbar("Error", "FindMy client not available");
+    return;
+  }
+  showSnackbar("identityV5", "Attempting identityV5 registration (sends to Apple)...");
+  try {
+    final result = await testRegisterIdentityV5(fmfd: fmfd);
+    showSnackbar("identityV5 Result", result);
+  } catch (e) {
+    showSnackbar("identityV5 Error", "$e");
+  }
+}
+
+Future<void> goToNotes(BuildContext context) async {
+  final currentChat = cm.activeChat?.chat;
+  ns.closeAllConversationView(context);
+  await cm.setAllInactive();
+  await Navigator.of(Get.context!).push(
+    ThemeSwitcher.buildPageRoute(
+      builder: (BuildContext context) {
+        return const NotesListPage();
       },
     ),
   );

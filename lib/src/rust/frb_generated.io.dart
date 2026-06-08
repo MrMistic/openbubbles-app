@@ -2510,6 +2510,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       dco_decode_record_list_shared_album_list_string(dynamic raw);
 
   @protected
+  (List<String>, List<String>) dco_decode_record_list_string_list_string(
+      dynamic raw);
+
+  @protected
   (List<TrustedPhoneNumber>, LoginState?)
       dco_decode_record_list_trusted_phone_number_opt_box_autoadd_login_state(
           dynamic raw);
@@ -5255,6 +5259,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   (List<SharedAlbum>, List<String>)
       sse_decode_record_list_shared_album_list_string(
           SseDeserializer deserializer);
+
+  @protected
+  (List<String>, List<String>) sse_decode_record_list_string_list_string(
+      SseDeserializer deserializer);
 
   @protected
   (List<TrustedPhoneNumber>, LoginState?)
@@ -8102,6 +8110,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_record_list_shared_album_list_string(
       (List<SharedAlbum>, List<String>) self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_record_list_string_list_string(
+      (List<String>, List<String>) self, SseSerializer serializer);
 
   @protected
   void sse_encode_record_list_trusted_phone_number_opt_box_autoadd_login_state(
