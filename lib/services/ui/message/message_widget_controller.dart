@@ -24,6 +24,10 @@ MessageWidgetController? getActiveMwc(String guid) =>
 class MessageWidgetController extends StatefulController with GetSingleTickerProviderStateMixin {
   final RxBool showEdits = false.obs;
   final Rxn<DateTime> audioWasKept = Rxn<DateTime>(null);
+  /// For messages rendered as a carousel (MosaicWidget), this tracks the
+  /// currently visible image index so reactions/replies/long-press preview
+  /// target the correct image instead of always part 0.
+  final RxInt carouselPage = 0.obs;
 
   List<MessagePart> parts = [];
   Message message;

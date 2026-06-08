@@ -215,6 +215,16 @@ class Settings {
   final RxBool enableShareZen = false.obs;
   final RxBool zenModeAware = false.obs;
 
+  // Animated HEIC sequence (iOS Live Sticker) playback preference.
+  // false (default): decode the static still item with proper alpha via HeifCoder.
+  //                  User sees a transparent sticker but no animation.
+  // true:            decode the moov color track via MediaCodec for animation,
+  //                  but without the alpha auxiliary track (the alpha decode
+  //                  fails on most devices). User sees an animated rectangular
+  //                  clip on a black background.
+  final RxBool liveStickerAnimateNoAlpha = true.obs;
+  final RxInt liveStickerBlackThreshold = 8.obs;
+
   final RxBool developerEnabled = false.obs;
   final RxList<String> developerMode = <String>[].obs;
 
@@ -448,6 +458,8 @@ class Settings {
       'warnedTextChats': warnedTextChats.value,
       'nonIMessageWarning': nonIMessageWarning.value,
       'zenModeAware': zenModeAware.value,
+      'liveStickerAnimateNoAlpha': liveStickerAnimateNoAlpha.value,
+      'liveStickerBlackThreshold': liveStickerBlackThreshold.value,
       'isTester': isTester.value,
       'cloudSyncingEnabled': cloudSyncingEnabled.value,
       'attachmentSyncEnabled': attachmentSyncEnabled.value,
@@ -628,6 +640,8 @@ class Settings {
     ss.settings.warnedTextChats.value = map['warnedTextChats'] ?? false;
     ss.settings.nonIMessageWarning.value = map['nonIMessageWarning'] ?? false;
     ss.settings.zenModeAware.value = map['zenModeAware'] ?? false;
+    ss.settings.liveStickerAnimateNoAlpha.value = map['liveStickerAnimateNoAlpha'] ?? true;
+    ss.settings.liveStickerBlackThreshold.value = map['liveStickerBlackThreshold'] ?? 8;
     ss.settings.smsRoutingTargets.value = (map['smsForwardingTargets']?.runtimeType == String ? jsonDecode(map['smsForwardingTargets']) as List : []).cast<String>();
     ss.settings.developerMode.value = (map['developerMode']?.runtimeType == String ? jsonDecode(map['developerMode']) as List : []).cast<String>();
     ss.settings.lastLocation.value = map['lastLocation'];
@@ -806,6 +820,8 @@ class Settings {
     s.warnedTextChats.value = map['warnedTextChats'] ?? false;
     s.nonIMessageWarning.value = map['nonIMessageWarning'] ?? false;
     s.zenModeAware.value = map['zenModeAware'] ?? false;
+    s.liveStickerAnimateNoAlpha.value = map['liveStickerAnimateNoAlpha'] ?? true;
+    s.liveStickerBlackThreshold.value = map['liveStickerBlackThreshold'] ?? 8;
     s.smsRoutingTargets.value = (map['smsForwardingTargets']?.runtimeType == String ? jsonDecode(map['smsForwardingTargets']) as List : []).cast<String>();
     s.developerMode.value = (map['developerMode']?.runtimeType == String ? jsonDecode(map['developerMode']) as List : []).cast<String>();
     s.lastLocation.value = map['lastLocation'];

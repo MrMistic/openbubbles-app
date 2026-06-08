@@ -8,6 +8,7 @@ import 'package:bluebubbles/app/wrappers/stateful_boilerplate.dart';
 import 'package:bluebubbles/database/models.dart';
 import 'package:bluebubbles/services/network/backend_service.dart';
 import 'package:bluebubbles/services/services.dart';
+import 'package:bluebubbles/utils/logger/logger.dart';
 import 'package:emojis/emoji.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -225,6 +226,10 @@ class ConversationViewController extends StatefulController with GetSingleTicker
       a.player.pause();
       a.player.dispose();
     }
+    focusNode.dispose();
+    subjectFocusNode.dispose();
+    textController.dispose();
+    subjectTextController.dispose();
     scrollController.dispose();
     shareSubscription?.cancel();
     super.onClose();
@@ -258,7 +263,7 @@ class ConversationViewController extends StatefulController with GetSingleTicker
   }
 
   Future<void> send(List<PlatformFile> attachments, AttributedBody text, String subject, String? replyGuid, int? replyPart, String? effectId, PayloadData? payload, bool isAudioMessage, DateTime? scheduledDate) async {
-    sendFunc?.call(Tuple7(attachments, text, subject, replyGuid, replyPart, effectId, payload), isAudioMessage, scheduledDate);
+    await sendFunc?.call(Tuple7(attachments, text, subject, replyGuid, replyPart, effectId, payload), isAudioMessage, scheduledDate);
   }
 
   void queueImage(Tuple4<Attachment, PlatformFile, BuildContext, Completer<Uint8List>> item) {
@@ -295,9 +300,11 @@ class ConversationViewController extends StatefulController with GetSingleTicker
       tmpData = await File(file.path!).readAsBytes();
     }
     if (tmpData == null) {
+      Logger.warn("[HEIC-SEQ] conversation_view_controller: imageData null for ${attachment.guid}, mime=${attachment.mimeType}");
       queued.item4.complete(Uint8List.fromList([]));
       return;
     }
+    Logger.info("[HEIC-SEQ] conversation_view_controller: storing ${tmpData.length} bytes for ${attachment.guid} (${attachment.mimeType})");
     imageData[attachment.guid!] = tmpData;
     try {
       await precacheImage(MemoryImage(tmpData), queued.item3);

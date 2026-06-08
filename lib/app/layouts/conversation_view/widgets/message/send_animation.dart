@@ -12,12 +12,30 @@ import 'package:bluebubbles/helpers/helpers.dart';
 import 'package:bluebubbles/database/models.dart';
 import 'package:bluebubbles/services/rustpush/rustpush_service.dart';
 import 'package:bluebubbles/services/services.dart';
+import 'package:bluebubbles/utils/logger/logger.dart';
 import 'package:dotted_border/dotted_border.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:mime_type/mime_type.dart';
 import 'package:simple_animations/simple_animations.dart';
 import 'package:tuple/tuple.dart';
+
+/// Resolve a MIME type for an outgoing attachment from its path/name.
+///
+/// The `mime_type` package does not recognize the HEIC-sequence extensions
+/// (`.heics` / `.heifs`) used by animated Live Stickers, returning null. That
+/// left the locally-stored Attachment with no mimeType, so the sent sticker
+/// never rendered on the sender's own screen (the recipient was fine — the
+/// wire path hardcodes `image/heic-sequence`). Map those extensions explicitly
+/// so the local row renders as an animated sticker like any received one.
+String? resolveSendMime(String? pathOrName) {
+  final resolved = mime(pathOrName);
+  if (resolved != null) return resolved;
+  final lower = (pathOrName ?? "").toLowerCase();
+  if (lower.endsWith(".heics")) return "image/heic-sequence";
+  if (lower.endsWith(".heifs")) return "image/heif-sequence";
+  return null;
+}
 
 class SendAnimation extends CustomStateful<ConversationViewController> {
   const SendAnimation({super.key, required super.parentController});
@@ -72,8 +90,66 @@ class _SendAnimationState
     }
 
     String? replyRun = part != null ? Message.findOne(guid: replyGuid)?.replyPart(part) : null;
-    for (int i = 0; i < attachments.length; i++) {
-      final file = attachments[i];
+
+    // Separate image files from non-image files for multi-image bundling
+    final imageFiles = attachments.where((f) =>
+        resolveSendMime(f.path ?? f.name)?.startsWith("image/") ?? false).toList();
+    final nonImageFiles = attachments.where((f) =>
+        !(resolveSendMime(f.path ?? f.name)?.startsWith("image/") ?? false)).toList();
+
+    if (imageFiles.length >= 2) {
+      // Bundle all images into a single multi-image message
+      String data = await DefaultAssetBundle.of(Get.context!).loadString("assets/rustpush/uti-map.json");
+      final utiMap = jsonDecode(data);
+      Logger.info(
+        "[Carousel] Bundling ${imageFiles.length} images into single message",
+        tag: "Carousel",
+      );
+      // Diagnostic: sticker state when going through the multi-image path.
+      // Multi-attachment bundles do not currently propagate sticker metadata,
+      // so this lets us tell if a sticker silently took the bundle branch.
+      Logger.info(
+        "queue MULTI bundling=${imageFiles.length} isSticker=${controller.isStickerSend} "
+        "pickedAttachments=${controller.pickedAttachments.length}",
+        tag: "StickerSend",
+      );
+
+      final message = Message(
+        text: "",
+        dateCreated: DateTime.now(),
+        dateScheduled: schedule,
+        hasAttachments: true,
+        attachments: imageFiles.map((file) => Attachment(
+          isOutgoing: true,
+          mimeType: resolveSendMime(file.path ?? file.name),
+          uti: utiMap[resolveSendMime(file.path ?? file.name)] ?? "public.data",
+          bytes: file.bytes,
+          transferName: file.name,
+          totalBytes: file.size,
+          sourcePath: file.path,
+        )).toList(),
+        isFromMe: true,
+        handleId: 0,
+        threadOriginatorGuid: replyGuid,
+        threadOriginatorPart: replyRun,
+        expressiveSendStyleId: effectId,
+      );
+      message.generateTempGuid();
+      for (int i = 0; i < message.attachments.length; i++) {
+        message.attachments[i]!.guid = "${message.guid}_$i";
+      }
+      await outq.queue(OutgoingItem(
+        type: QueueType.sendMultiAttachment,
+        chat: controller.chat,
+        message: message,
+        customArgs: {"audio": isAudioMessage},
+      ));
+    }
+
+    // Send non-image files (or all files if < 2 images) individually
+    final filesToSendIndividually = imageFiles.length >= 2 ? nonImageFiles : attachments;
+    for (int i = 0; i < filesToSendIndividually.length; i++) {
+      final file = filesToSendIndividually[i];
       String data = await DefaultAssetBundle.of(Get.context!).loadString("assets/rustpush/uti-map.json");
       final utiMap = jsonDecode(data);
 
@@ -81,6 +157,15 @@ class _SendAnimationState
       final stickerBundleId = isSticker
           ? "com.apple.Stickers.UserGenerated.MessagesExtension"
           : null;
+      // Diagnostic: capture sticker state at queue-time to debug why
+      // [StickerSend]/[StickerProcessor] aren't firing on send.
+      Logger.info(
+        "queue isSticker=$isSticker name=${file.name} mime=${mime(file.path ?? file.name)} "
+        "pickedAttachments=${controller.pickedAttachments.length} "
+        "showAttachmentPicker=${controller.showAttachmentPicker} "
+        "payloadBundleId=${payload?.bundleId} stickerBundleId=$stickerBundleId",
+        tag: "StickerSend",
+      );
 
       final message = Message(
         text: "",
@@ -90,8 +175,8 @@ class _SendAnimationState
         attachments: [
           Attachment(
             isOutgoing: true,
-            mimeType: mime(file.path ?? file.name),
-            uti: utiMap[mime(file.path ?? file.name)] ?? "public.data",
+            mimeType: resolveSendMime(file.path ?? file.name),
+            uti: utiMap[resolveSendMime(file.path ?? file.name)] ?? "public.data",
             bytes: file.bytes,
             transferName: file.name,
             totalBytes: file.size,
@@ -100,8 +185,8 @@ class _SendAnimationState
         ],
         isFromMe: true,
         handleId: 0,
-        threadOriginatorGuid: i == 0 ? replyGuid : null,
-        threadOriginatorPart: i == 0 ? replyRun : null,
+        threadOriginatorGuid: i == 0 && imageFiles.length < 2 ? replyGuid : null,
+        threadOriginatorPart: i == 0 && imageFiles.length < 2 ? replyRun : null,
         expressiveSendStyleId: effectId,
         payloadData: payload,
         balloonBundleId: stickerBundleId ?? payload?.bundleId,

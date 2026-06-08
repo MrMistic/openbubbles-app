@@ -36,6 +36,14 @@ class _MessagePopupHolderState extends OptimizedState<MessagePopupHolder> {
 
   Message get message => widget.controller.message;
 
+  /// For carousel parts, target the image the user is currently viewing
+  /// instead of always using the merged display part (which is always 0).
+  int get effectivePart {
+    if (widget.part.attachmentPartMap.isEmpty) return widget.part.part;
+    final pageIndex = widget.controller.carouselPage.value;
+    return widget.part.partForCarouselIndex(pageIndex);
+  }
+
   void openPopup() async {
     widget.cvController.focusNode.unfocus();
     widget.cvController.subjectFocusNode.unfocus();
@@ -139,14 +147,14 @@ class _MessagePopupHolderState extends OptimizedState<MessagePopupHolder> {
         : ss.settings.doubleTapForDetails.value || message.guid!.startsWith('temp')
         ? () => openPopup()
         : ss.settings.enableQuickTapback.value && widget.cvController.chat.isIMessage
-        ? () => sendTapback(null, null, widget.part.part)
+        ? () => sendTapback(null, null, effectivePart)
         : null,
       onLongPress: widget.isEditing ? null
         : ss.settings.doubleTapForDetails.value &&
         ss.settings.enableQuickTapback.value &&
         widget.cvController.chat.isIMessage &&
         !message.guid!.startsWith('temp')
-        ? () => sendTapback(null, null, widget.part.part)
+        ? () => sendTapback(null, null, effectivePart)
         : () => openPopup(),
       onSecondaryTapUp: widget.isEditing ? null : (details) async {
         if (!kIsWeb && !kIsDesktop) return;

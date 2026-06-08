@@ -48,9 +48,20 @@ class _BackupRestorePanelState extends OptimizedState<BackupRestorePanel> {
       final stickers = <Map<String, String>>[];
       await for (final entity in stickerDir.list()) {
         if (entity is File) {
+          final name = basename(entity.path);
+          // Skip iCloud-synced stickers and their derived artifacts. These are
+          // already backed up in the user's iCloud sticker library and re-sync
+          // automatically, so including them here would bloat the OB backup and
+          // duplicate data. Only user-added local stickers are backed up.
+          //   icloud_<id>.png    — synced still thumbnail
+          //   icloud_<id>.heics  — synced animated (Live Sticker) source
+          //   *.apng             — decoded animated cache (regenerable)
+          if (name.startsWith('icloud_') || name.toLowerCase().endsWith('.apng')) {
+            continue;
+          }
           final bytes = await entity.readAsBytes();
           stickers.add({
-            'filename': basename(entity.path),
+            'filename': name,
             'data': base64Encode(bytes),
           });
         }

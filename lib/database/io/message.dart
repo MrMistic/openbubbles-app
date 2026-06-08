@@ -726,10 +726,36 @@ class Message {
     }
     if (parts.isEmpty) {
       if (!hasApplePayloadData && !isLegacyUrlPreview && !isGroupEvent) {
-        parts.addAll(attachments.mapIndexed((index, e) => MessagePart(
-              attachments: [e!],
-              part: index,
-            )));
+        final allAttachments = attachments.where((e) => e != null && e.mimeType != null).cast<Attachment>().toList();
+        final imageAttachments = allAttachments.where((a) => a.mimeStart == "image").toList();
+        final nonImageAttachments = allAttachments.where((a) => a.mimeStart != "image").toList();
+
+        if (imageAttachments.length >= 2) {
+          Logger.info(
+            "[Carousel] Grouping ${imageAttachments.length} images (fallback path) for $guid",
+            tag: "Carousel",
+          );
+          // Group all images into a single MessagePart for mosaic rendering.
+          // For locally-built sends, original indices are 0..N-1 in order.
+          parts.add(MessagePart(
+            attachments: imageAttachments,
+            attachmentPartMap: List<int>.generate(imageAttachments.length, (i) => i),
+            part: 0,
+          ));
+          // Non-image attachments get individual parts
+          for (int i = 0; i < nonImageAttachments.length; i++) {
+            parts.add(MessagePart(
+              attachments: [nonImageAttachments[i]],
+              part: i + 1,
+            ));
+          }
+        } else {
+          // Existing behavior: one part per attachment
+          parts.addAll(allAttachments.mapIndexed((index, e) => MessagePart(
+            attachments: [e],
+            part: index,
+          )));
+        }
       } else if (isInteractive) {
         parts.add(MessagePart(
           part: 0,
@@ -745,6 +771,50 @@ class Message {
       }
     }
     parts.sort((a, b) => a.part.compareTo(b.part));
+
+    // Post-process: group consecutive image-only parts into a single part
+    // for carousel rendering. This handles both received messages (from
+    // attributedBody) and locally-created messages (from fallback path).
+    if (parts.length >= 2) {
+      final imageParts = parts.where((p) =>
+          p.attachments.isNotEmpty &&
+          p.attachments.length == 1 &&
+          p.attachments.first.mimeStart != null &&
+          p.attachments.first.mimeStart == "image" &&
+          (p.text == null || p.text!.isEmpty || p.text == '\uFFFC')).toList();
+      if (imageParts.length >= 2) {
+        // Collect all image attachments from image-only parts, preserving
+        // each one's original part index so reactions/replies target the
+        // correct image inside the carousel.
+        final allImageAttachments = imageParts.expand((p) => p.attachments).toList();
+        final carouselPartMap = imageParts.map((p) => p.part).toList();
+        Logger.info(
+          "[Carousel] Grouping ${allImageAttachments.length} images for $guid",
+          tag: "Carousel",
+        );
+        // Remove the individual image parts
+        parts.removeWhere((p) => imageParts.contains(p));
+        // Insert a single grouped part at the beginning
+        parts.insert(0, MessagePart(
+          attachments: allImageAttachments,
+          attachmentPartMap: carouselPartMap,
+          part: 0,
+        ));
+        // Re-index remaining parts
+        for (int i = 1; i < parts.length; i++) {
+          parts[i] = MessagePart(
+            subject: parts[i].subject,
+            text: parts[i].text,
+            attachments: parts[i].attachments,
+            annotations: parts[i].annotations,
+            isUnsent: parts[i].isUnsent,
+            edits: parts[i].edits,
+            part: i,
+          );
+        }
+      }
+    }
+
     return parts;
   }
 

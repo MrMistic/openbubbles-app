@@ -281,6 +281,23 @@ class ActionHandler extends GetxService {
         await file.writeAsBytes(attachment.bytes!);
       } else {
         await File(attachment.sourcePath!).copy(pathName);
+
+        // Animated (Live) sticker optimization: the sticker picker/sync may
+        // have already decoded this .heics into an animated .apng next to the
+        // source. Copy that cache alongside the message's file so the sticker
+        // renderer gets a cache hit instead of decoding the HEIC-sequence
+        // again. Purely an optimization — if the cache is missing the renderer
+        // decodes on demand as before.
+        try {
+          final srcApng = File("${attachment.sourcePath!}.apng");
+          if ((attachment.mimeType?.contains("image/heic-sequence") ?? false) &&
+              await srcApng.exists() &&
+              await srcApng.length() > 0) {
+            await srcApng.copy("$pathName.apng");
+          }
+        } catch (_) {
+          // Non-fatal: fall back to on-demand decode.
+        }
       }
 
       var mm = attachment.mimeType ?? mime(attachment.transferName);
@@ -400,6 +417,78 @@ class ActionHandler extends GetxService {
       }
     }
     await c.addMessage(m);
+  }
+
+  /// Prepare multiple attachments for sending (save to disk).
+  Future<void> prepMultiAttachment(Chat c, Message m) async {
+    for (final att in m.attachments.whereType<Attachment>()) {
+      final progress = Tuple2(att.guid!, 0.0.obs);
+      attachmentProgress.add(progress);
+      if (!kIsWeb) {
+        String directory = "${fs.appDocDir.path}/attachments/${att.guid}";
+        String pathName = "$directory/${att.transferName}";
+        if (!canonicalize(pathName).startsWith(canonicalize(directory))) {
+          throw Exception("Path traversal detected!");
+        }
+        final file = await File(pathName).create(recursive: true);
+        if (att.bytes != null) {
+          await file.writeAsBytes(att.bytes!);
+        } else if (att.sourcePath != null) {
+          await File(att.sourcePath!).copy(pathName);
+        }
+      }
+    }
+    await c.addMessage(m);
+  }
+
+  /// Send a multi-attachment message (all images in one message).
+  Future<void> sendMultiAttachment(Chat c, Message m, bool isAudioMessage) async {
+    if (m.attachments.isEmpty) return;
+    final completer = Completer<void>();
+    var apnsSuccess = false;
+    (backend as RustPushBackend).sendMultiAttachment(
+      c, m, isAudioMessage,
+      onSendProgress: (current, total, progress) {
+        final att = m.attachments[current];
+        if (att != null) {
+          final existing = attachmentProgress.firstWhereOrNull((e) => e.item1 == att.guid);
+          if (existing != null) {
+            existing.item2.value = progress;
+          }
+        }
+      },
+    ).then((newMessage) async {
+      for (Attachment? a in newMessage.attachments) {
+        if (a == null) continue;
+        final existing = m.attachments.firstWhereOrNull((e) => e?.guid?.startsWith(m.guid ?? '') ?? false);
+        if (existing != null) {
+          matchAttachmentWithExisting(c, m.guid!, a, existing: existing)
+            .catchError((e, stack) {
+              Logger.warn("Failed to replace attachment ${a.guid}!", error: e, tag: "AttachmentStatus");
+            });
+        }
+      }
+      try {
+        await matchMessageWithExisting(c, m.guid!, newMessage, existing: m);
+      } catch (e) {
+        Logger.warn("Failed to find message match for ${m.guid} -> ${newMessage.guid}!", error: e, tag: "MessageStatus");
+      }
+      apnsSuccess = true;
+      await m.forwardIfNessesary(c);
+      attachmentProgress.removeWhere((e) => e.item1 == m.guid || e.item2 >= 1);
+      completer.complete();
+    }).catchError((error, stack) async {
+      Logger.error('Failed to send multi-attachment message!', error: error, trace: stack);
+      final tempGuid = m.guid;
+      m = handleSendError(error, m);
+      if (!ls.isAlive || !(cm.getChatController(c.guid)?.isAlive ?? false)) {
+        await notif.createFailedToSend(c);
+      }
+      await Message.replaceMessage(tempGuid, m);
+      attachmentProgress.removeWhere((e) => e.item1 == m.guid || e.item2 >= 1);
+      completer.completeError(error);
+    });
+    return completer.future;
   }
 
   Future<void> sendAttachment(Chat c, Message m, bool isAudioMessage) async {

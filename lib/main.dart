@@ -526,8 +526,8 @@ class _HomeState extends OptimizedState<Home> with WidgetsBindingObserver, TrayL
           fullyLoaded = true;
         });
       } else if ((fs.androidInfo?.version.sdkInt ?? 0) >= 33) {
-        Permission.notification.request();
-      }
+          Permission.notification.request();
+        }
     });
   }
 
@@ -624,7 +624,7 @@ class _HomeState extends OptimizedState<Home> with WidgetsBindingObserver, TrayL
               backgroundColor: context.theme.colorScheme.background.themeOpacity(context),
               body: Builder(
                 builder: (BuildContext context) {
-                  if (ss.settings.finishedSetup.value) {
+                  if (ss.settings.finishedSetup.value || const bool.fromEnvironment('SHOW_CREATE_ALBUM')) {
                     if (!serverCompatible && kIsWeb) {
                       return const FailureToStart(
                         otherTitle: "Server version too low, please upgrade!",

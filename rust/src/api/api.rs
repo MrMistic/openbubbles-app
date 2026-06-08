@@ -34,6 +34,7 @@ use async_recursion::async_recursion;
 use base64::prelude::*;
 pub use rustpush::IdmsAuthListener;
 pub use broadcast::Receiver;
+use rustpush::notes::{NotesClient, AttachmentMediaMap, parse_note_data, dump_keychain_diagnostics};
 
 use crate::{RUNTIME, frb_generated::{SseEncode, StreamSink}, init_logger, native::{HANDLE_WIFI_NETWORKS, PACKAGER_LOCK, PackagedFile, QUEUED_MESSAGES}};
 
@@ -615,6 +616,9 @@ impl SharedPushState {
             conn: conn.clone(),
             icloud_services: if let Some(account) = &account {
                 let token_provider = make_token_provider(account, config);
+                // NOTE: MME delegate persistence (so cold starts don't need the relay to mint
+                // a fresh token) is wired up inside make_cloudkit below, which has both the
+                // state dir and the provider and is also called by the setup/login path.
                 let cloudkit = make_cloudkit(path.clone(), &anisette, config, &token_provider).await.expect("todo remove");
                 let keychain = make_keychain(path.clone(), &cloudkit, &anisette, config, &token_provider);
 
@@ -687,6 +691,13 @@ pub fn make_token_provider(account: &Arc<Mutex<AppleAccount<DefaultAnisetteProvi
     TokenProvider::new(account.clone(), config.config())
 }
 
+// NOTE: deliberately NOT exposing a `set_token_provider_cache_path` FFI here. A new
+// #[frb] function would require regenerating the flutter_rust_bridge bindings, which
+// rewrites the large generated files and risks churn unrelated to the change. It's
+// unnecessary: make_cloudkit already receives both the state dir and the token
+// provider and is called on every startup path, so the MME delegate cache is wired
+// up there instead. See the comment in make_cloudkit.
+
 pub async fn make_shared_streams(path: String, conn: &APSConnection, anisette: &ArcAnisetteClient<DefaultAnisetteProvider>, 
         config: &JoinedOSConfig, token: &Arc<TokenProvider<DefaultAnisetteProvider>>) -> Option<SyncManager<DefaultAnisetteProvider, MyFilePackager>> {
     let dir = PathBuf::from_str(&path).unwrap();
@@ -708,6 +719,18 @@ pub async fn make_shared_streams(path: String, conn: &APSConnection, anisette: &
 
 pub async fn make_cloudkit(path: String, anisette: &ArcAnisetteClient<DefaultAnisetteProvider>, config: &JoinedOSConfig, token_provider: &Arc<TokenProvider<DefaultAnisetteProvider>>) -> Option<Arc<CloudKitClient<DefaultAnisetteProvider>>> {
     let dir = PathBuf::from_str(&path).unwrap();
+
+    // Wire up MME delegate persistence here because this is the first host call that
+    // has BOTH the state dir and the token provider, and every startup path runs it
+    // right after creating the provider — `SharedPushState::restore` below, and the
+    // initial setup/login flow in setup_view.dart. Doing it here (rather than adding
+    // a dedicated FFI) avoids regenerating the flutter_rust_bridge bindings.
+    //
+    // Must stay ABOVE the `.ok()?` early return below: a missing cloudkit.plist must
+    // not prevent the token cache from being wired up. `set_cache_path` is safe to
+    // call repeatedly — it re-records the path and won't clobber an already-loaded
+    // in-memory delegate.
+    token_provider.set_cache_path(dir.clone()).await;
 
     let cloudkit_path = dir.join("cloudkit.plist");
 
@@ -1450,6 +1473,42 @@ pub async fn subscribe_token(lock: &SyncManager<DefaultAnisetteProvider, MyFileP
     Ok(albums_ref)
 }
 
+pub async fn create_album(lock: &SyncManager<DefaultAnisetteProvider, MyFilePackager>, name: String, allow_contributions: bool, invitees: Vec<String>) -> anyhow::Result<String> {
+    info!("[CreateAlbum] ENTRY name={:?} allow_contributions={} invitees={:?}", name, allow_contributions, invitees);
+
+    // Step 1: create the album.
+    let (album_guid, album_ctag) = match lock.client.create_album(&name, allow_contributions, "com.apple.Photos").await {
+        Ok(result) => {
+            info!("[CreateAlbum] createalbum SUCCESS guid={} ctag_len={}", result.0, result.1.len());
+            result
+        }
+        Err(e) => {
+            log::error!("[CreateAlbum] createalbum FAILED: {:?}", e);
+            return Err(e.into());
+        }
+    };
+
+    // Step 2: invite people, if any.
+    if !invitees.is_empty() {
+        match lock.client.share_album(&album_guid, &album_ctag, &invitees).await {
+            Ok(_) => info!("[CreateAlbum] share SUCCESS for {} invitees", invitees.len()),
+            Err(e) => {
+                log::error!("[CreateAlbum] share FAILED: {:?}", e);
+                return Err(e.into());
+            }
+        }
+    }
+
+    // Step 3: pick up the new album in local state.
+    match lock.client.get_changes().await {
+        Ok(_) => info!("[CreateAlbum] get_changes SUCCESS"),
+        Err(e) => log::warn!("[CreateAlbum] get_changes failed (non-fatal): {:?}", e),
+    }
+
+    info!("[CreateAlbum] EXIT guid={}", album_guid);
+    Ok(album_guid)
+}
+
 pub async fn add_album(lock: &SyncManager<DefaultAnisetteProvider, MyFilePackager>, guid: String, folder: String) -> anyhow::Result<Vec<SharedAlbum>> {
     lock.add_album(guid, PathBuf::from_str(&folder).unwrap()).await;
 
@@ -2167,6 +2226,153 @@ pub async fn submit_own_location(
     Ok(())
 }
 
+/// Publish location via the modern secure-locations channel (People surface).
+///
+/// This is the correct mechanism for appearing under "People" in friends' Find My.
+/// Uses ECIES (P-224 + ANSI X9.63 KDF + AES-128-GCM-KDFIV) with the publisher's
+/// own pubkey as the recipient (broadcast model — friends decrypt with the
+/// per-friend shared key established during the MappingPacket exchange).
+///
+/// The crypto is verified bidirectionally against `Security.framework`. See
+/// `tools/findmy-capture/INVESTIGATION.md` §29-31.
+///
+/// Currently uses a hardcoded captured pubkey (the capture account's
+/// secure-locations key, sourced from the iPhone 6s Frida rig — distinct from
+/// the iPhone 6 validation-data relay, which has no Apple ID). Production use
+/// requires generating + registering a per-account keypair via CloudKit; see
+/// INVESTIGATION.md §32 for options.
+pub async fn publish_secure_location(
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+    latitude: f64,
+    longitude: f64,
+    altitude: f64,
+    horizontal_accuracy: f64,
+    vertical_accuracy: f64,
+    speed: f64,
+    course: f64,
+) -> anyhow::Result<()> {
+    fmfd.publish_secure_location(latitude, longitude, altitude, horizontal_accuracy, vertical_accuracy, speed, course).await?;
+    Ok(())
+}
+
+/// Test: send a MappingPacket to the first follower to verify the IDS delivery
+/// and Apple's import endpoint acceptance. Returns a descriptive result string.
+pub async fn test_send_mapping_packet(
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+) -> anyhow::Result<String> {
+    let result = fmfd.test_send_mapping_packet().await?;
+    Ok(result)
+}
+
+/// Test: attempt the fmip `identityV5` device registration so our device gets a
+/// `deviceDiscoveryId` and can become the account `meDeviceId` (upstream gate for
+/// FindMy People publish — see IDENTITYV5_PLAN.md). Returns a descriptive result
+/// string. On configs without a relay fmip-signing bridge this reports
+/// "unsupported" and sends nothing.
+pub async fn test_register_identity_v5(
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+) -> anyhow::Result<String> {
+    let result = fmfd.test_register_identity_v5().await?;
+    Ok(result)
+}
+
+/// READ-ONLY diagnostic: probe the relay's fmip bridge (PCRT + hardware descriptor)
+/// and log the results, to verify Task 2's low-risk half without submitting anything
+/// to Apple. See IDENTITYV5_PLAN.md verification procedure.
+pub async fn test_probe_fmip_bridge(
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+) -> anyhow::Result<String> {
+    let result = fmfd.test_probe_fmip_bridge().await?;
+    Ok(result)
+}
+
+/// TEMPORARY diagnostic: exercise the relay `fmip-sign` bridge command with a dummy
+/// 32-byte digest to reveal the HTTP-body -> websocket-`data` wire shape (piece-1
+/// audit Issue A). Signs nothing real and does not mutate account state. Read the
+/// relay-side DIAG echo from the [FMF-IDV5] log after deploying the ffb239d relay .deb.
+pub async fn test_probe_fmip_sign(
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+) -> anyhow::Result<String> {
+    let result = fmfd.test_probe_fmip_sign().await?;
+    Ok(result)
+}
+
+/// Invite a friend to share their location with us.
+pub async fn fmf_invite_friend(
+    config: &JoinedOSConfig,
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+    handle: String,
+) -> anyhow::Result<()> {
+    let mut daemon = fmfd.daemon.lock().await;
+    daemon.invite_friend(&*config.config(), &handle).await?;
+    Ok(())
+}
+
+/// Stop sharing our location with specific friends.
+pub async fn fmf_stop_sharing(
+    config: &JoinedOSConfig,
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+    handles: Vec<String>,
+) -> anyhow::Result<()> {
+    let mut daemon = fmfd.daemon.lock().await;
+    daemon.stop_sharing(&*config.config(), &handles).await?;
+    Ok(())
+}
+
+/// Start sharing our location with a single friend.
+/// Calls offerLocation for this handle, then relays the mapping packet token via IDS.
+pub async fn fmf_offer_location_single(
+    config: &JoinedOSConfig,
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+    handle: String,
+) -> anyhow::Result<()> {
+    let tokens = {
+        let mut daemon = fmfd.daemon.lock().await;
+        daemon.offer_location(&*config.config(), &[handle.clone()]).await?
+    };
+    for (handle_id, token) in &tokens {
+        fmfd.relay_mapping_packet(handle_id, token).await?;
+    }
+    Ok(())
+}
+
+/// Get the list of followers (people who can see our location) and following (people whose location we can see).
+/// Returns (followers_handles, following_handles).
+pub async fn fmf_get_sharing_state(
+    config: &JoinedOSConfig,
+    fmfd: &Arc<FindMyClient<DefaultAnisetteProvider>>,
+) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    let mut daemon = fmfd.daemon.lock().await;
+    daemon.refresh(&*config.config()).await?;
+
+    // === DIAGNOSTIC: dump raw follow entries so we can see exactly which handle
+    // field maps to the friend vs to us. followers = people who see OUR location;
+    // following = people whose location WE can see.
+    info!("[FMF-STATE] === followers ({} entries) ===", daemon.followers.len());
+    for (i, f) in daemon.followers.iter().enumerate() {
+        info!("[FMF-STATE]   follower[{}] id={} from={:?} accepted={:?}",
+            i, f.id, f.invitation_from_handles, f.invitation_accepted_handles);
+    }
+    info!("[FMF-STATE] === following ({} entries) ===", daemon.following.len());
+    for (i, f) in daemon.following.iter().enumerate() {
+        info!("[FMF-STATE]   following[{}] id={} from={:?} accepted={:?}",
+            i, f.id, f.invitation_from_handles, f.invitation_accepted_handles);
+    }
+
+    let followers: Vec<String> = daemon.followers.iter()
+        .filter_map(|f| f.invitation_from_handles.first().or(f.invitation_accepted_handles.first()).cloned())
+        .collect();
+    
+    let following: Vec<String> = daemon.following.iter()
+        .filter_map(|f| f.invitation_from_handles.first().or(f.invitation_accepted_handles.first()).cloned())
+        .collect();
+
+    info!("[FMF-STATE] resolved followers list: {:?}", followers);
+    info!("[FMF-STATE] resolved following list: {:?}", following);
+
+    Ok((followers, following))
+}
+
 /// Post location via the background daemon client (preferred — daemon mode is required for posting).
 pub async fn post_my_location_background(
     config: &JoinedOSConfig,
@@ -2195,17 +2401,84 @@ pub async fn get_background_following(fmfd: &Arc<FindMyClient<DefaultAnisettePro
 }
 
 pub async fn refresh_background_following(state: &Arc<FindMyClient<DefaultAnisetteProvider>>, config: &JoinedOSConfig) -> anyhow::Result<Vec<Follow>> {
-    // === TEMPORARY TEST: Submit Montreal location on every refresh ===
-    info!("[FMF-SUBMIT] Triggering submit_own_location (Montreal: 45.5017, -73.5673)");
-    match state.submit_own_location(45.5017, -73.5673, 50.0, 10.0).await {
-        Ok(()) => info!("[FMF-SUBMIT] submit_own_location succeeded!"),
-        Err(e) => log::error!("[FMF-SUBMIT] submit_own_location failed: {:?}", e),
+    // === TEMPORARY TEST: trigger an FMF People-surface publish on every refresh.
+    // Previously this called submit_own_location (the AirTag/Items v2 endpoint —
+    // wrong protocol for "appear under People"). Now uses publish_secure_location,
+    // which encrypts via ECIES with the publisher's own pubkey and submits to
+    // /findmyservice/submit. See INVESTIGATION.md §22-31. Throttled by the same
+    // module-level gate as sync_item_positions; manual UI button is unaffected.
+    if rustpush::findmy::fmf_auto_publish_should_fire() {
+        info!("[FMF-SUBMIT] Triggering publish_secure_location (Montreal placeholder)");
+        match state.publish_secure_location(
+            45.5017,    // latitude
+            -73.5673,   // longitude
+            50.0,       // altitude (m)
+            10.0,       // horizontal_accuracy (m)
+            5.0,        // vertical_accuracy (m)
+            0.0,        // speed (m/s)
+            0.0,        // course (degrees)
+        ).await {
+            Ok(()) => info!("[FMF-SUBMIT] publish_secure_location returned Ok (HTTP status logged separately)"),
+            Err(e) => log::error!("[FMF-SUBMIT] publish_secure_location failed: {:?}", e),
+        }
+    } else {
+        debug!("[FMF-SUBMIT] Skipping auto-publish (within throttle window)");
     }
     // === END TEMPORARY TEST ===
 
     let mut x = state.daemon.lock().await;
-    x.refresh(&*config.config()).await?;
-    Ok(x.following.clone())
+    // Tolerate a transient refreshClient failure. `refresh()` errors on things like a momentary
+    // relay/token blip (DeviceNotFound / delegate-login hiccup). When that happens but we ALREADY
+    // hold a cached `following` list, the cached data is still valid — refreshClient only picks up
+    // new friends/context, it is NOT a prerequisite for displaying friends we already know. So we
+    // log and fall through, still running the fetch+decrypt below on the cached list.
+    //
+    // Only on a COLD START (no cached following at all) do we propagate the error, because then
+    // there genuinely is nothing to show and the UI's "Something went wrong!" is the honest state.
+    if let Err(e) = x.refresh(&*config.config()).await {
+        if x.following.is_empty() {
+            log::error!("[FMF-RECV] refreshClient failed and no cached following (cold start): {:?}", e);
+            return Err(e.into());
+        }
+        log::warn!("[FMF-RECV] refreshClient failed; serving {} cached following friends: {:?}",
+            x.following.len(), e);
+    }
+
+    // === RECEIVE: fetch + decrypt friends' secure locations ===
+    // The REST refreshClient no longer returns `locations` (iOS 15 relay moved them to the
+    // encrypted secure-locations channel). We fetch them ourselves from findmyservice/fetch
+    // and decrypt with our own P-224 key. Results are keyed by findMyId == Follow.id.
+    let fm_ids: Vec<String> = x.following.iter().map(|f| f.id.clone()).collect();
+    drop(x); // release daemon lock before the network call
+
+    info!("[FMF-RECV] refresh_background_following: {} following friends", fm_ids.len());
+
+    if !fm_ids.is_empty() {
+        match state.fetch_locations(&fm_ids).await {
+            Ok(locations) => {
+                let mut merged = 0usize;
+                let mut daemon = state.daemon.lock().await;
+                for follow in daemon.following.iter_mut() {
+                    if let Some(loc_json) = locations.get(&follow.id) {
+                        if let Some(loc) = rustpush::findmy::location_from_secure_json(loc_json) {
+                            info!("[FMF-RECV] merged location for friend id={}: lat={} lon={}",
+                                follow.id, loc.latitude, loc.longitude);
+                            follow.last_location = Some(loc);
+                            merged += 1;
+                        } else {
+                            info!("[FMF-RECV] friend id={} decrypted JSON had no usable lat/lon", follow.id);
+                        }
+                    }
+                }
+                info!("[FMF-RECV] SUMMARY: following={} decrypted={} merged_into_follow={}",
+                    fm_ids.len(), locations.len(), merged);
+            },
+            Err(e) => log::error!("[FMF-FETCH] fetch_locations failed: {:?}", e),
+        }
+    }
+
+    let daemon = state.daemon.lock().await;
+    Ok(daemon.following.clone())
 }
 
 #[frb(type_64bit_int)]
@@ -2884,4 +3157,136 @@ pub async fn convert_token_to_uuid(state: &Arc<IMClient>, handle: String, token:
 pub async fn get_sms_targets(state: &Arc<IMClient>, handle: String, refresh: bool) -> anyhow::Result<Vec<PrivateDeviceInfo>> {
     let targets = state.identity.get_sms_targets(&handle, refresh).await?;
     Ok(targets)
+}
+
+/// Sync notes from CloudKit private database. Returns JSON string:
+/// { "token": <base64 | null>, "folders": [...], "notes": [...], "media_map": {...} }
+pub async fn fetch_notes_json(
+    cloudkit: &Arc<CloudKitClient<DefaultAnisetteProvider>>,
+    keychain: &Arc<KeychainClient<DefaultAnisetteProvider>>,
+    continuation_token: Option<Vec<u8>>,
+) -> anyhow::Result<String> {
+    let client = NotesClient::new(cloudkit.clone(), keychain.clone());
+    let (new_token, folders, notes, media_map) = client.sync_notes(continuation_token).await?;
+    let result = serde_json::json!({
+        "token": new_token.map(|t| BASE64_STANDARD.encode(&t)),
+        "folders": folders,
+        "notes": notes,
+        "media_map": media_map,
+    });
+    Ok(result.to_string())
+}
+
+/// Parse raw note data bytes into formatted content with attachments and tables.
+pub async fn parse_note_json(data: Vec<u8>) -> anyhow::Result<String> {
+    let parsed = parse_note_data(&data)?;
+    let result = serde_json::to_string(&parsed)?;
+    Ok(result)
+}
+
+/// Download attachment asset data from CloudKit. Returns raw image bytes.
+/// `media_map_json` is the serialized AttachmentMediaMap from a previous sync_notes call.
+pub async fn fetch_attachment_data(
+    cloudkit: &Arc<CloudKitClient<DefaultAnisetteProvider>>,
+    keychain: &Arc<KeychainClient<DefaultAnisetteProvider>>,
+    attachment_identifier: String,
+) -> anyhow::Result<Vec<u8>> {
+    fetch_attachment_data_with_map(cloudkit, keychain, attachment_identifier, None).await
+}
+
+/// Download attachment asset data from CloudKit with media map context.
+pub async fn fetch_attachment_data_with_map(
+    cloudkit: &Arc<CloudKitClient<DefaultAnisetteProvider>>,
+    keychain: &Arc<KeychainClient<DefaultAnisetteProvider>>,
+    attachment_identifier: String,
+    media_map_json: Option<String>,
+) -> anyhow::Result<Vec<u8>> {
+    let client = NotesClient::new(cloudkit.clone(), keychain.clone());
+    
+    // Restore the media map from the previous sync if provided
+    if let Some(json) = media_map_json {
+        if let Ok(map) = serde_json::from_str::<AttachmentMediaMap>(&json) {
+            let mut stored = client.media_map.lock().await;
+            *stored = map;
+        }
+    }
+    
+    Ok(client.download_attachment(&attachment_identifier).await?)
+}
+
+/// Sync shared notes from CloudKit shared database. Returns JSON string:
+/// { "token": <base64 | null>, "folders": [...], "notes": [...] }
+pub async fn fetch_shared_notes_json(
+    cloudkit: &Arc<CloudKitClient<DefaultAnisetteProvider>>,
+    keychain: &Arc<KeychainClient<DefaultAnisetteProvider>>,
+    continuation_token: Option<Vec<u8>>,
+) -> anyhow::Result<String> {
+    let client = NotesClient::new(cloudkit.clone(), keychain.clone());
+    let (new_token, folders, notes) = client.sync_shared_notes(continuation_token).await?;
+    let result = serde_json::json!({
+        "token": new_token.map(|t| BASE64_STANDARD.encode(&t)),
+        "folders": folders,
+        "notes": notes,
+    });
+    Ok(result.to_string())
+}
+
+/// Diagnostic: dump all keychain zones and their items' pcsservice IDs to logs.
+/// Used to discover the correct PCSService.r#type for the Notes service.
+/// Check the OB logs after calling this for "=== KEYCHAIN DIAGNOSTICS ===" sections.
+pub async fn dump_notes_keychain_diagnostics(
+    keychain: &Arc<KeychainClient<DefaultAnisetteProvider>>,
+) -> anyhow::Result<()> {
+    dump_keychain_diagnostics(keychain).await?;
+    Ok(())
+}
+
+
+/// Incrementally fetch stickers from iCloud. Pass the `continuation_token`
+/// persisted from the previous sync (hex string), or None for a full initial
+/// sync. Returns a JSON string containing the new token (hex), the changed
+/// stickers with base64 image data, and the ids of deleted records.
+/// Logs progress at INFO level under "[STICKER-SYNC]".
+pub async fn fetch_icloud_stickers(
+    cloudkit: &Arc<CloudKitClient<DefaultAnisetteProvider>>,
+    keychain: &Arc<KeychainClient<DefaultAnisetteProvider>>,
+    continuation_token: Option<String>,
+) -> anyhow::Result<String> {
+    let client = rustpush::sticker_sync::StickerSyncClient::new(cloudkit.clone(), keychain.clone());
+    let token_bytes = match continuation_token {
+        Some(hex) if !hex.is_empty() => {
+            let bytes = (0..hex.len()).step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+                .collect::<Result<Vec<u8>, _>>()?;
+            Some(bytes)
+        }
+        _ => None,
+    };
+    let (new_token, stickers, deletions, status) = client.fetch_stickers(token_bytes).await?;
+    let result = serde_json::json!({
+        "token": new_token.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+        "status": status,
+        "deletions": deletions,
+        "stickers": stickers.iter().map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "external_uri": s.external_uri,
+                "type": s.sticker_type,
+                "effect": s.effect,
+                "uti": s.uti,
+                "role": s.role,
+                "image_data": BASE64_STANDARD.encode(&s.image_data),
+                "is_animated": s.is_animated,
+                "animated_uti": s.animated_uti,
+                "animated_data": if s.animated_data.is_empty() {
+                    String::new()
+                } else {
+                    BASE64_STANDARD.encode(&s.animated_data)
+                },
+            })
+        }).collect::<Vec<_>>(),
+        "count": stickers.len(),
+    });
+    Ok(result.to_string())
 }

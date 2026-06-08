@@ -11,6 +11,7 @@ import 'package:bluebubbles/services/backend/settings/settings_service.dart';
 import 'package:bluebubbles/services/network/backend_service.dart';
 import 'package:bluebubbles/services/rustpush/rustpush_service.dart';
 import 'package:bluebubbles/services/services.dart';
+import 'package:bluebubbles/utils/logger/logger.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -114,7 +115,12 @@ class _FindMyState extends OptimizedState<FindMy> with AutomaticKeepAliveClientM
 
   final RxMap<String, FindMyFriend> userPosition = RxMap({});
 
-  void updateFollows(List<api.Follow> follows) {
+  // Reverse-geocode cache keyed by (lat, long). Secure-location (iOS 15+) friends arrive as
+  // raw coordinates with no server-provided address, so we geocode client-side for the subtitle
+  // (mirrors findmy_page). Legacy friends that already carry a server address skip this.
+  final Map<(double, double), Address> _cachedAddresses = {};
+
+  Future<void> updateFollows(List<api.Follow> follows) async {
     expires = null;
     isLive = false;
     var chat = widget.message.chat.target!;
@@ -134,12 +140,55 @@ class _FindMyState extends OptimizedState<FindMy> with AutomaticKeepAliveClientM
       if (handle == mainLocation) {
         isLive = true;
       }
-      
+
+      final loc = e!.lastLocation;
+      String? longAddress = loc?.address?.formattedAddressLines?.join("\n");
+      String? shortAddress = loc?.address != null
+          ? "${loc?.address?.locality}, ${loc?.address?.stateCode ?? loc?.address?.countryCode}"
+          : null;
+      if (shortAddress == null && loc != null && loc.latitude != 0 && loc.longitude != 0) {
+        final key = (loc.latitude, loc.longitude);
+        Address? resolved = _cachedAddresses[key];
+        if (resolved == null) {
+          try {
+            final placemark = await pushService.reverseGeocode(loc.latitude, loc.longitude);
+            if (placemark != null) {
+              resolved = Address(
+                subAdministrativeArea: placemark.subAdministrativeArea,
+                label: placemark.thoroughfare ?? placemark.name,
+                streetAddress: placemark.thoroughfare,
+                country: placemark.country,
+                countryCode: placemark.isoCountryCode,
+                administrativeArea: placemark.administrativeArea,
+                streetName: placemark.thoroughfare,
+                formattedAddressLines: [
+                  if (placemark.thoroughfare != null) placemark.thoroughfare!,
+                  if (placemark.locality != null) placemark.locality!,
+                  if (placemark.administrativeArea != null) placemark.administrativeArea!,
+                ],
+                locality: placemark.locality,
+                stateCode: placemark.administrativeArea?.substring(0, 2).toUpperCase(),
+                mapItemFullAddress: null,
+                fullThroroughfare: null,
+                areaOfInterest: [],
+              );
+              _cachedAddresses[key] = resolved;
+            }
+          } catch (err, s) {
+            Logger.warn("Friend geocoding failed", error: err, trace: s);
+          }
+        }
+        if (resolved != null) {
+          longAddress = resolved.formattedAddressLines.join("\n");
+          shortAddress = "${resolved.locality}, ${resolved.stateCode ?? resolved.countryCode}";
+        }
+      }
+
       userPosition[handle] = FindMyFriend(
-        latitude: e!.lastLocation?.latitude,
-        longitude: e.lastLocation?.longitude,
-        longAddress: e.lastLocation?.address?.formattedAddressLines?.join("\n"), 
-        shortAddress: e.lastLocation?.address != null ? "${e.lastLocation?.address?.locality}, ${e.lastLocation?.address?.stateCode ?? e.lastLocation?.address?.countryCode}" : null,
+        latitude: loc?.latitude,
+        longitude: loc?.longitude,
+        longAddress: longAddress,
+        shortAddress: shortAddress,
         title: null, 
         subtitle: null, 
         handle: Handle(address: e.invitationAcceptedHandles.first), 

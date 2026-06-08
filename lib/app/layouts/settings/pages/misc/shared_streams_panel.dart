@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:bluebubbles/app/layouts/settings/pages/misc/create_album_form.dart';
 import 'package:bluebubbles/app/layouts/settings/widgets/content/next_button.dart';
 import 'package:bluebubbles/helpers/helpers.dart';
 import 'package:bluebubbles/app/layouts/settings/widgets/settings_widgets.dart';
@@ -53,6 +54,7 @@ class _SharedStreamsPanelState extends OptimizedState<SharedStreamsPanel> {
   
 
   void updateSyncState() async {
+    if (pushService.state?.icloudServices?.sharedstreams == null) return;
     var items = await api.getAlbums(lock: pushService.state!.icloudServices!.sharedstreams!, refresh: false);
     myAlbums = items.$1.where((album) => album.sharingtype == "subscribed" || album.sharingtype == "owned").toList();
     pendingAlbums = items.$1.where((album) => album.sharingtype == "pending").toList();
@@ -67,6 +69,7 @@ class _SharedStreamsPanelState extends OptimizedState<SharedStreamsPanel> {
   void initState() {
     super.initState();
     refreshTimer = Timer.periodic(const Duration(seconds: 1), (timer) => updateSyncState());
+    if (pushService.state?.icloudServices?.sharedstreams == null) return;
     (() async {
       updateSyncState();
       await api.getAlbums(lock: pushService.state!.icloudServices!.sharedstreams!, refresh: true);
@@ -371,6 +374,22 @@ class _SharedStreamsPanelState extends OptimizedState<SharedStreamsPanel> {
         materialSubtitle: materialSubtitle,
         tileColor: tileColor,
         headerColor: headerColor,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: 'Create Shared Album',
+            onPressed: () async {
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const CreateAlbumForm()),
+              );
+              if (result == true) {
+                showSnackbar('Success', 'Shared album created!');
+                updateSyncState();
+              }
+            },
+          ),
+        ],
         bodySlivers: [
           SliverList(
             delegate: SliverChildListDelegate(

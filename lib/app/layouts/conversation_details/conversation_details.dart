@@ -36,11 +36,18 @@ class ConversationDetails extends StatefulWidget {
   State<ConversationDetails> createState() => _ConversationDetailsState();
 }
 
+enum _SectionState { idle, loading, loaded }
+
 class _ConversationDetailsState extends OptimizedState<ConversationDetails> with WidgetsBindingObserver {
   List<Attachment> media = <Attachment>[];
   List<Attachment> docs = <Attachment>[];
   List<Attachment> locations = <Attachment>[];
   List<Message> links = [];
+  // Media/docs/locations and links are loaded lazily on first tap of their
+  // section headers, so opening the details page does no attachment/link DB
+  // work — most visits (mute, participants, etc.) never touch these.
+  _SectionState attachmentsState = _SectionState.idle;
+  _SectionState linksState = _SectionState.idle;
   bool showMoreParticipants = false;
   late Chat chat = widget.chat;
   late StreamSubscription sub;
@@ -91,12 +98,9 @@ class _ConversationDetailsState extends OptimizedState<ConversationDetails> with
       });
     }
 
-    if (!kIsWeb) {
-      updateObx(() {
-        fetchAttachments();
-        fetchLinks();
-      });
-    }
+    // Attachments and links are now loaded lazily when the user taps their
+    // section headers (see fetchAttachments/fetchLinks), so nothing loads on
+    // page open.
   }
 
   @override
@@ -110,43 +114,93 @@ class _ConversationDetailsState extends OptimizedState<ConversationDetails> with
     super.dispose();
   }
 
-  void fetchAttachments() {
-    if (kIsWeb) return;
-    chat.getAttachmentsAsync().then((value) {
-      final _media = value.where((e) => !(e.message.target?.isGroupEvent ?? true)
-          && !(e.message.target?.isInteractive ?? true)
-          && (e.mimeStart == "image" || e.mimeStart == "video")).take(24);
-      final _docs = value.where((e) => !(e.message.target?.isGroupEvent ?? true)
-          && !(e.message.target?.isInteractive ?? true)
-          && e.mimeStart != "image" && e.mimeStart != "video" && !(e.mimeType ?? "").contains("location")).take(24);
-      final _locations = value.where((e) => (e.mimeType ?? "").contains("location")).take(10);
-      for (Attachment a in _media) {
-        a.message.target?.handle = chat.participants.firstWhereOrNull((e) => e.originalROWID == a.message.target?.handleId);
-      }
-      for (Attachment a in _docs) {
-        a.message.target?.handle = chat.participants.firstWhereOrNull((e) => e.originalROWID == a.message.target?.handleId);
-      }
-      for (Attachment a in _locations) {
-        a.message.target?.handle = chat.participants.firstWhereOrNull((e) => e.originalROWID == a.message.target?.handleId);
-      }
-      setState(() {
-        media = _media.toList();
-        docs = _docs.toList();
-        locations = _locations.toList();
-      });
+  /// A tappable section header that triggers a lazy load. Shows a chevron when
+  /// idle (tap to load), a spinner while loading, and plain text once loaded.
+  Widget _lazyHeader(String label, _SectionState state, VoidCallback onTap) {
+    final style = context.theme.textTheme.bodyMedium!.copyWith(color: context.theme.colorScheme.outline);
+    if (state == _SectionState.loaded) {
+      return Text(label, style: style);
+    }
+    return InkWell(
+      onTap: state == _SectionState.idle ? onTap : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Text(label, style: style),
+            const SizedBox(width: 8),
+            if (state == _SectionState.loading)
+              SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2, color: context.theme.colorScheme.outline),
+              )
+            else
+              Icon(iOS ? CupertinoIcons.chevron_down : Icons.expand_more, size: 16, color: context.theme.colorScheme.outline),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _assignHandle(Attachment a) {
+    a.message.target?.handle =
+        chat.participants.firstWhereOrNull((e) => e.originalROWID == a.message.target?.handleId);
+  }
+
+  /// Load the Images & Videos / Other Files / Locations sections. Bounded:
+  /// each kind is fetched via a limited attachment query, not a full-history
+  /// scan. Triggered on first tap of the "IMAGES & VIDEOS" header.
+  Future<void> fetchAttachments() async {
+    if (kIsWeb || attachmentsState != _SectionState.idle) return;
+    setState(() => attachmentsState = _SectionState.loading);
+
+    final results = await Future.wait([
+      chat.getMediaAttachmentsAsync("media", limit: 24),
+      chat.getMediaAttachmentsAsync("doc", limit: 24),
+      chat.getMediaAttachmentsAsync("location", limit: 10),
+    ]);
+    final _media = results[0];
+    final _docs = results[1];
+    final _locations = results[2];
+
+    for (final a in _media) { _assignHandle(a); }
+    for (final a in _docs) { _assignHandle(a); }
+    for (final a in _locations) { _assignHandle(a); }
+
+    if (!mounted) return;
+    setState(() {
+      media = _media;
+      docs = _docs;
+      locations = _locations;
+      attachmentsState = _SectionState.loaded;
     });
   }
 
-  void fetchLinks() {
-    final query = (Database.messages.query(Message_.dateDeleted.isNull()
-      & Message_.dbPayloadData.notNull()
-      & Message_.balloonBundleId.contains("URLBalloonProvider"))
-      ..link(Message_.chat, Chat_.id.equals(chat.id!))
-      ..order(Message_.dateCreated, flags: Order.descending))
-        .build();
-    query.limit = 20;
-    links = query.find();
-    query.close();
+  /// Load the Links section. Already bounded (limit 20) via a targeted query.
+  /// Triggered on first tap of the "LINKS" header.
+  Future<void> fetchLinks() async {
+    if (kIsWeb || linksState != _SectionState.idle) return;
+    setState(() => linksState = _SectionState.loading);
+
+    final found = await runAsync(() {
+      final query = (Database.messages.query(Message_.dateDeleted.isNull()
+        & Message_.dbPayloadData.notNull()
+        & Message_.balloonBundleId.contains("URLBalloonProvider"))
+        ..link(Message_.chat, Chat_.id.equals(chat.id!))
+        ..order(Message_.dateCreated, flags: Order.descending))
+          .build();
+      query.limit = 20;
+      final result = query.find();
+      query.close();
+      return result;
+    });
+
+    if (!mounted) return;
+    setState(() {
+      links = found;
+      linksState = _SectionState.loaded;
+    });
   }
 
   @override
@@ -350,11 +404,19 @@ class _ConversationDetailsState extends OptimizedState<ConversationDetails> with
               padding: EdgeInsets.symmetric(vertical: 10),
             ),
             ChatOptions(chat: chat),
-            if (!kIsWeb && media.isNotEmpty)
+            if (!kIsWeb)
               SliverPadding(
                 padding: const EdgeInsets.only(top: 20, bottom: 10, left: 15),
                 sliver: SliverToBoxAdapter(
-                  child: Text("IMAGES & VIDEOS", style: context.theme.textTheme.bodyMedium!.copyWith(color: context.theme.colorScheme.outline)),
+                  child: _lazyHeader("IMAGES & VIDEOS", attachmentsState, fetchAttachments),
+                ),
+              ),
+            if (!kIsWeb && attachmentsState == _SectionState.loaded && media.isEmpty && docs.isEmpty && locations.isEmpty)
+              SliverPadding(
+                padding: const EdgeInsets.only(left: 15, bottom: 10),
+                sliver: SliverToBoxAdapter(
+                  child: Text("No media in this conversation",
+                      style: context.theme.textTheme.bodySmall!.copyWith(color: context.theme.colorScheme.outline)),
                 ),
               ),
             if (!kIsWeb && media.isNotEmpty)
@@ -368,66 +430,76 @@ class _ConversationDetailsState extends OptimizedState<ConversationDetails> with
                   ),
                   delegate: SliverChildBuilderDelegate(
                     (context, int index) {
-                      return Obx(() => AnimatedContainer(
-                        duration: const Duration(milliseconds: 250),
-                        margin: EdgeInsets.all(selected.contains(media[index].guid) ? 10 : 0),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        clipBehavior: Clip.antiAlias,
-                        child: GestureDetector(
-                          onTap: selected.isNotEmpty ? () {
-                            if (selected.contains(media[index].guid)) {
-                              selected.remove(media[index].guid!);
-                            } else {
-                              selected.add(media[index].guid!);
-                            }
-                          } : null,
-                          onLongPress: () {
-                            if (selected.contains(media[index].guid)) {
-                              selected.remove(media[index].guid!);
-                            } else {
-                              selected.add(media[index].guid!);
-                            }
-                          },
-                          child: AbsorbPointer(
-                            absorbing: selected.isNotEmpty,
-                            child: Stack(
-                              alignment: Alignment.center,
-                              children: [
-                                MediaGalleryCard(
-                                  attachment: media[index],
-                                ),
-                                if (selected.contains(media[index].guid))
-                                  Container(
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: context.theme.colorScheme.primary
-                                    ),
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(5.0),
-                                      child: Icon(
-                                        iOS ? CupertinoIcons.check_mark : Icons.check,
-                                        color: context.theme.colorScheme.onPrimary,
-                                        size: 18,
+                      final attachment = media[index];
+                      // Build the (expensive) thumbnail card ONCE, outside the
+                      // Obx closure, so toggling selection on one item doesn't
+                      // rebuild every card's MediaGalleryCard — only the thin
+                      // selection chrome below re-renders.
+                      final card = MediaGalleryCard(attachment: attachment);
+                      void toggle() {
+                        if (selected.contains(attachment.guid)) {
+                          selected.remove(attachment.guid!);
+                        } else {
+                          selected.add(attachment.guid!);
+                        }
+                      }
+                      return Obx(() {
+                        final isSelected = selected.contains(attachment.guid);
+                        return AnimatedContainer(
+                          duration: const Duration(milliseconds: 250),
+                          margin: EdgeInsets.all(isSelected ? 10 : 0),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          clipBehavior: Clip.antiAlias,
+                          child: GestureDetector(
+                            onTap: selected.isNotEmpty ? toggle : null,
+                            onLongPress: toggle,
+                            child: AbsorbPointer(
+                              absorbing: selected.isNotEmpty,
+                              child: Stack(
+                                alignment: Alignment.center,
+                                children: [
+                                  card,
+                                  if (isSelected)
+                                    Container(
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: context.theme.colorScheme.primary
+                                      ),
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(5.0),
+                                        child: Icon(
+                                          iOS ? CupertinoIcons.check_mark : Icons.check,
+                                          color: context.theme.colorScheme.onPrimary,
+                                          size: 18,
+                                        ),
                                       ),
                                     ),
-                                  ),
-                              ],
+                                ],
+                              ),
                             ),
                           ),
-                        ),
-                      ));
+                        );
+                      });
                     },
                     childCount: media.length,
                   ),
                 ),
               ),
-            if (!kIsWeb && links.isNotEmpty)
+            if (!kIsWeb)
               SliverPadding(
                 padding: const EdgeInsets.only(top: 20, bottom: 10, left: 15),
                 sliver: SliverToBoxAdapter(
-                  child: Text("LINKS", style: context.theme.textTheme.bodyMedium!.copyWith(color: context.theme.colorScheme.outline)),
+                  child: _lazyHeader("LINKS", linksState, fetchLinks),
+                ),
+              ),
+            if (!kIsWeb && linksState == _SectionState.loaded && links.isEmpty)
+              SliverPadding(
+                padding: const EdgeInsets.only(left: 15, bottom: 10),
+                sliver: SliverToBoxAdapter(
+                  child: Text("No links in this conversation",
+                      style: context.theme.textTheme.bodySmall!.copyWith(color: context.theme.colorScheme.outline)),
                 ),
               ),
             if (!kIsWeb && links.isNotEmpty)

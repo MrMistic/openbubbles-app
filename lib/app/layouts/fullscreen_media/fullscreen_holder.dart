@@ -23,7 +23,8 @@ class FullscreenMediaHolder extends StatefulWidget {
     required this.showInteractions,
     this.currentChat,
     this.videoController,
-    this.mute
+    this.mute,
+    this.scopedAttachments,
   });
 
   final ChatLifecycleManager? currentChat;
@@ -31,6 +32,9 @@ class FullscreenMediaHolder extends StatefulWidget {
   final bool showInteractions;
   final VideoController? videoController;
   final RxBool? mute;
+  /// When provided, navigation is constrained to this list (message-scoped).
+  /// Includes all images in the message, even those beyond the 9-tile mosaic limit.
+  final List<Attachment>? scopedAttachments;
 
   @override
   FullscreenMediaHolderState createState() => FullscreenMediaHolderState();
@@ -40,9 +44,10 @@ class FullscreenMediaHolderState extends OptimizedState<FullscreenMediaHolder> {
   final focusNode = FocusNode();
   late final PageController controller;
   late final messageService = widget.currentChat == null ? null : ms(widget.currentChat!.chat.guid);
-  late List<Attachment> attachments = widget.currentChat == null
+  late List<Attachment> attachments = widget.scopedAttachments ??
+      (widget.currentChat == null
       ? [attachment]
-      : messageService!.struct.attachments.where((e) => e.mimeStart == "image" || e.mimeStart == "video").toList();
+      : messageService!.struct.attachments.where((e) => e.mimeStart == "image" || e.mimeStart == "video").toList());
 
   int currentIndex = 0;
   ScrollPhysics? physics;
@@ -84,7 +89,10 @@ class FullscreenMediaHolderState extends OptimizedState<FullscreenMediaHolder> {
   Future<void> _createStickerFromCurrent() async {
     if (!_currentIsImage()) return;
     final current = attachments[currentIndex];
-    final content = as.getContent(current, path: current.guid == null ? current.sourcePath : null);
+    final _isTemp = current.guid?.startsWith("temp") ?? false;
+    final content = _isTemp
+        ? current.getFile()
+        : as.getContent(current, path: current.guid == null ? current.sourcePath : null);
     if (content is! PlatformFile) {
       showSnackbar('Error', 'Could not read the image yet. Try again in a moment.');
       return;
@@ -197,8 +205,10 @@ class FullscreenMediaHolderState extends OptimizedState<FullscreenMediaHolder> {
                   controller: controller,
                   itemBuilder: (BuildContext context, int index) {
                     final attachment = attachments[index];
-                    dynamic content =
-                        as.getContent(attachment, path: attachment.guid == null ? attachment.sourcePath : null);
+                    final _isTemp = attachment.guid?.startsWith("temp") ?? false;
+                    dynamic content = _isTemp
+                        ? attachment.getFile()
+                        : as.getContent(attachment, path: attachment.guid == null ? attachment.sourcePath : null);
                     final key = attachment.guid ?? attachment.transferName ?? randomString(8);
 
                     if (content is PlatformFile) {

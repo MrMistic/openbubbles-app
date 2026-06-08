@@ -13,9 +13,11 @@ import 'package:bluebubbles/app/layouts/conversation_view/widgets/message/intera
 import 'package:bluebubbles/app/layouts/conversation_view/widgets/message/misc/tail_clipper.dart';
 import 'package:bluebubbles/app/layouts/conversation_view/widgets/message/popup/message_popup_holder.dart';
 import 'package:bluebubbles/app/wrappers/stateful_boilerplate.dart';
+import 'package:bluebubbles/helpers/ui/apple_maps_link.dart';
 import 'package:bluebubbles/helpers/helpers.dart';
 import 'package:bluebubbles/database/models.dart' hide PayloadType;
 import 'package:bluebubbles/services/services.dart';
+import 'package:bluebubbles/utils/logger/logger.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -137,8 +139,29 @@ class _InteractiveHolderState extends CustomState<InteractiveHolder, void, Messa
                 return;
               }
             } 
+            Logger.info("[InteractiveHolder] onTap url=$url type=${payloadData!.type} interactiveText=${message.interactiveText}");
             if (message.interactiveText == "Live Location") return; // better way to handle this?
             if (url != null && Uri.tryParse(url) != null) {
+              // Apple Maps links are useless on Android — intercept and open in the in-app map.
+              if (AppleMapsLink.isAppleMapsLink(url)) {
+                try {
+                  final resolved = await AppleMapsLink.resolve(url);
+                  if (resolved != null) {
+                    final sender = message.isFromMe!
+                        ? "you"
+                        : (message.getHandle()?.displayName ?? "a contact");
+                    final label = resolved.label != null
+                        ? "${resolved.label} — shared by $sender"
+                        : "Shared Location from $sender";
+                    if (context.mounted) {
+                      await AppleMapsLink.openInFindMy(context, resolved.coords, label: label);
+                    }
+                    return;
+                  }
+                } catch (e) {
+                  Logger.warn("[InteractiveHolder] Apple Maps resolve failed, falling through: $e");
+                }
+              }
               await launchUrl(
                 Uri.parse(url),
                 mode: LaunchMode.externalApplication,

@@ -1,4 +1,5 @@
 import 'package:bluebubbles/database/models.dart' hide Entity;
+import 'package:bluebubbles/helpers/ui/apple_maps_link.dart';
 import 'package:bluebubbles/utils/logger/logger.dart';
 import 'package:bluebubbles/helpers/helpers.dart';
 import 'package:bluebubbles/services/services.dart';
@@ -156,6 +157,14 @@ Future<List<InlineSpan>> buildEnrichedMessageSpans(BuildContext context, Message
         markRange(Tuple3("link", [match.start, match.end], null));
       }
     }
+
+    // Apple Maps short-links (maps.apple/p/...) use a TLD-less domain that generic URL
+    // detectors (ML Kit UrlEntity and urlRegex) miss. Scan explicitly so they get tappable
+    // "link" treatment and the Apple Maps interceptor can handle them.
+    final appleMapsShortRegex = RegExp(r'https?://maps\.apple/\S+');
+    for (final match in appleMapsShortRegex.allMatches(part.text!)) {
+      markRange(Tuple3("link", [match.start, match.end], null));
+    }
   }
 
   annotations.sort((a, b) => a.range[0].compareTo(b.range[0]));
@@ -217,8 +226,40 @@ Future<List<InlineSpan>> buildEnrichedMessageSpans(BuildContext context, Message
                   if (!url.startsWith("http://") && !url.startsWith("https://")) {
                     url = "http://$url";
                   }
+                  // Apple Maps links (maps.apple.com or maps.apple/p/...) are useless on Android.
+                  // Resolve (follows short-link redirects if needed), parse coords, and open in
+                  // the in-app Find My map. Falls through to external launch if resolution fails
+                  // or no coordinates are extractable.
+                  Logger.info("Link tap: type=$type url=$url isApple=${AppleMapsLink.isAppleMapsLink(url)}");
+                  if (AppleMapsLink.isAppleMapsLink(url)) {
+                    final resolved = await AppleMapsLink.resolve(url);
+                    Logger.info("Apple Maps resolve result: ${resolved?.coords} label=${resolved?.label}");
+                    if (resolved != null) {
+                      final sender = message.isFromMe!
+                          ? "you"
+                          : (message.getHandle()?.displayName ?? "a contact");
+                      final label = resolved.label != null
+                          ? "${resolved.label} — shared by $sender"
+                          : "Shared Location from $sender";
+                      await AppleMapsLink.openInFindMy(context, resolved.coords, label: label);
+                      return;
+                    }
+                  }
                   await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
                 } else if (type == "map") {
+                  if (AppleMapsLink.isAppleMapsLink(text)) {
+                    final resolved = await AppleMapsLink.resolve(text);
+                    if (resolved != null) {
+                      final sender = message.isFromMe!
+                          ? "you"
+                          : (message.getHandle()?.displayName ?? "a contact");
+                      final label = resolved.label != null
+                          ? "${resolved.label} — shared by $sender"
+                          : "Shared Location from $sender";
+                      await AppleMapsLink.openInFindMy(context, resolved.coords, label: label);
+                      return;
+                    }
+                  }
                   await MapsLauncher.launchQuery(text);
                 } else if (type == "phone") {
                   await launchUrl(Uri(scheme: "tel", path: text));

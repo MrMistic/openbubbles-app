@@ -129,10 +129,23 @@ class AttachmentDownloadController extends GetxController {
     try {
       // Compress the attachment
       if (!kIsWeb) {
+        final ext = attachment.path.contains('.') ? attachment.path.split('.').last.toLowerCase() : '';
+        final uti = attachment.uti ?? 'null';
+        // Sniff the ftyp brand for any HEIC-family arrival so we can tell
+        // a still .heic from an animated .heics regardless of MIME claims.
+        String? brand;
+        if (attachment.mimeType?.contains('image/hei') == true || ext == 'heic' || ext == 'heics' || ext == 'heif') {
+          brand = await sniffHeifBrand(attachment.path);
+        }
+        Logger.info("[HEIC-SEQ] downloads_service: post-download processing, "
+            "mime=${attachment.mimeType}, ext=$ext, uti=$uti, "
+            "brand=${brand ?? "n/a"}, path=${attachment.path}");
         await as.loadAndGetProperties(attachment, actualPath: attachment.path);
+        Logger.info("[HEIC-SEQ] downloads_service: loadAndGetProperties completed for ${attachment.transferName}");
         attachment.save(null);
       }
     } catch (ex) {
+      Logger.warn("[HEIC-SEQ] downloads_service: post-download processing failed: $ex");
       // So what if it crashes here.... I don't care...
     }
 

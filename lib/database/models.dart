@@ -31,6 +31,7 @@ export 'package:bluebubbles/database/global/settings.dart';
 export 'package:bluebubbles/database/global/attributed_body.dart';
 export 'package:bluebubbles/database/global/structured_name.dart';
 export 'package:bluebubbles/database/global/queue_items.dart';
+export 'package:bluebubbles/database/global/multi_attachment_progress.dart';
 export 'package:bluebubbles/database/global/async_image_input.dart';
 export 'package:bluebubbles/database/global/chat_messages.dart';
 export 'package:bluebubbles/database/global/apple_location.dart';
