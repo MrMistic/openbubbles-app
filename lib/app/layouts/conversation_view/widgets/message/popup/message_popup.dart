@@ -105,6 +105,14 @@ class _MessagePopupState extends OptimizedState<MessagePopup> with SingleTickerP
 
   Message get message => widget.controller.message;
 
+  /// For carousel parts, target the image the user is currently viewing
+  /// instead of always using the merged display part (which is always 0).
+  int get effectivePart {
+    if (part.attachmentPartMap.isEmpty) return part.part;
+    final pageIndex = widget.controller.carouselPage.value;
+    return part.partForCarouselIndex(pageIndex);
+  }
+
   bool get isSent => !message.guid!.startsWith('temp') && !message.guid!.startsWith('error');
 
   bool get showDownload =>
@@ -139,7 +147,7 @@ class _MessagePopupState extends OptimizedState<MessagePopup> with SingleTickerP
     updateObx(() {
       currentlySelectedReaction = null;
       reactions = getUniqueReactionMessages(message.associatedMessages
-          .where((e) => ReactionTypes.toList().contains(e.associatedMessageType?.replaceAll("-", "")) && (e.associatedMessagePart ?? 0) == part.part)
+          .where((e) => ReactionTypes.toList().contains(e.associatedMessageType?.replaceAll("-", "")) && (e.associatedMessagePart ?? 0) == effectivePart)
           .toList());
       final reaction = reactions.firstWhereOrNull((e) => e.isFromMe!);
       final myReact = reaction?.associatedMessageType;
@@ -209,7 +217,7 @@ class _MessagePopupState extends OptimizedState<MessagePopup> with SingleTickerP
 
   void reactEmoji(String emoji) {
     HapticFeedback.lightImpact();
-    widget.sendTapback(selfReaction == emoji ? "-${ReactionTypes.EMOJI}" : ReactionTypes.EMOJI, emoji, part.part);
+    widget.sendTapback(selfReaction == emoji ? "-${ReactionTypes.EMOJI}" : ReactionTypes.EMOJI, emoji, effectivePart);
     popDetails();
   }
 
@@ -399,7 +407,7 @@ class _MessagePopupState extends OptimizedState<MessagePopup> with SingleTickerP
                                                         setState(() {});
                                                         if (ReactionTypes.toList().contains(e)) {
                                                           HapticFeedback.lightImpact();
-                                                          widget.sendTapback(selfReaction == e ? "-$e" : e, null, part.part);
+                                                          widget.sendTapback(selfReaction == e ? "-$e" : e, null, effectivePart);
                                                           popDetails();
                                                         } else {
                                                           if (selfReaction != e) {
@@ -647,7 +655,7 @@ class _MessagePopupState extends OptimizedState<MessagePopup> with SingleTickerP
 
   void reply() {
     popDetails();
-    cvController.replyToMessage = Tuple2(message, part.part);
+    cvController.replyToMessage = Tuple2(message, effectivePart);
   }
 
   Future<void> download() async {

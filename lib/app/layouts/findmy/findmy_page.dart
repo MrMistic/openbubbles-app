@@ -36,9 +36,16 @@ import 'package:bluebubbles/src/rust/api/api.dart' as api;
 import 'package:url_launcher/url_launcher.dart';
 
 class FindMyPage extends StatefulWidget {
-  FindMyPage({super.key, this.defaultFriend});
+  FindMyPage({super.key, this.defaultFriend, this.initialLocation, this.initialLabel});
 
   String? defaultFriend;
+
+  /// When set, the map opens centered on this coordinate with a dropped pin.
+  /// Used for opening a received maps.apple.com link at its coordinates.
+  final LatLng? initialLocation;
+
+  /// Optional label for the [initialLocation] pin popup (e.g. the place query).
+  final String? initialLabel;
 
   @override
   State<StatefulWidget> createState() => _FindMyPageState();
@@ -68,14 +75,51 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
   bool canRefresh = false;
   bool isInClique = true;
 
+  /// Human-readable reason the last devices/friends load failed, shown instead of
+  /// a bare "Something went wrong!". Null when the failure isn't recognized.
+  String? devicesError;
+  String? friendsError;
+
+  /// True when we're rendering data from a previous successful load because the
+  /// most recent refresh failed (e.g. relay unreachable). Drives a stale banner.
+  bool devicesStale = false;
+  bool friendsStale = false;
+
   Map<(double, double), Address> cachedAddresses = {};
+
+  /// Turn a raw Rust/network error into something a user can act on.
+  ///
+  /// Find My auth flows through the relay device to mint Apple tokens
+  /// (generate_validation_data -> MobileMe delegate login). When the relay is
+  /// offline or its token is momentarily rejected, the errors surface as
+  /// DeviceNotFound / UnauthorizedAccountError / DelegateLoginFailed. Those all
+  /// mean the same thing to a user: we can't reach the paired Apple device.
+  /// Everything else falls back to null so the generic message is used.
+  static String? _describeFindMyError(Object e) {
+    final s = e.toString();
+    if (s.contains("DeviceNotFound") || s.contains("RelayError") || s.contains("FmipBridgeUnsupported")) {
+      return "Can't reach your paired Apple device.\nFind My needs it to talk to Apple.";
+    }
+    if (s.contains("UnauthorizedAccountError") ||
+        s.contains("DelegateLoginFailed") ||
+        s.contains("TokenMissing")) {
+      return "Apple rejected the sign-in from your paired device.\nIt may need to be unlocked or reconnected.";
+    }
+    if (s.contains("error sending request") ||
+        s.contains("dns error") ||
+        s.contains("ConnectionRefused") ||
+        s.contains("SocketException") ||
+        s.contains("Connection reset")) {
+      return "No connection to Apple.\nCheck your network and try again.";
+    }
+    return null;
+  }
 
   List<api.DartBeacon> cachedBeacons = [];
   DateTime? beaconCacheDate;
 
   Timer? myTimer;
 
-  api.FindMyFriendsClientDefaultAnisetteProvider? fmfClient;
   api.FindMyPhoneClientDefaultAnisetteProvider? fmipClient;
 
   @override
@@ -84,6 +128,35 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
     if (widget.defaultFriend != null) {
       index.value = 1; // select friends tab
       tabController.index = 1;
+    }
+    if (widget.initialLocation != null) {
+      // Opened from a received maps.apple.com link: drop a pin at the coords and center on it
+      // once the map is ready.
+      final loc = widget.initialLocation!;
+      markers["dropped-pin"] = Marker(
+        key: const ValueKey("dropped-pin"),
+        point: loc,
+        width: 30,
+        height: 35,
+        alignment: Alignment.topCenter,
+        child: ClipShadowPath(
+          clipper: const FindMyPinClipper(),
+          shadow: const BoxShadow(color: Colors.black, blurRadius: 2),
+          child: Container(
+            color: Colors.white,
+            child: const Center(
+              child: Padding(
+                padding: EdgeInsets.only(bottom: 5.0),
+                child: Icon(Icons.location_on, color: Colors.red, size: 20),
+              ),
+            ),
+          ),
+        ),
+      );
+      completer.future.then((_) {
+        if (!mounted) return;
+        mapController.move(loc, 15);
+      });
     }
     getLocations();
 
@@ -157,40 +230,84 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
       }
     }
 
-    var isNew = fmfClient == null;
-    fmfClient ??= await api.makeFindMyFriends(
-      path: pushService.statePath,
-      config: pushService.state!.osConfig,
-      aps: pushService.state!.conn,
-      anisette: pushService.state!.anisette,
-      provider: pushService.state!.icloudServices!.tokenProvider,
-    );
+    // NOTE: We use the background `fmfd` (FindMyClient) path instead of a standalone
+    // FindMyFriendsClient. Only `fmfd` holds the per-friend secure-location keys
+    // (state.friend_secure_keys, populated by the inbound secureLocationsKeyUpdate IDS
+    // handler) and wires the ECIES fetch+decrypt into refresh_background_following. A
+    // standalone client created via makeFindMyFriends cannot decrypt friend locations.
+    final fmfd = pushService.state!.icloudServices!.fmfd!;
 
     try {
-      if (refreshFriends && !isNew) {
-        await api.refreshFollowing(config: pushService.state!.osConfig, client: fmfClient!);
+      List<api.Follow> following;
+      if (refreshFriends) {
+        following = await api.refreshBackgroundFollowing(state: fmfd, config: pushService.state!.osConfig);
+      } else {
+        following = await api.getBackgroundFollowing(fmfd: fmfd);
       }
-
-      var following = await api.getFollowing(client: fmfClient!);
     
-      friends = following
-          .map((e) => 
-            FindMyFriend(
-              latitude: e.lastLocation?.latitude,
-              longitude: e.lastLocation?.longitude,
-              longAddress: e.lastLocation?.address?.formattedAddressLines?.join("\n"), 
-              shortAddress: e.lastLocation?.address != null ? "${e.lastLocation?.address?.locality}, ${e.lastLocation?.address?.stateCode ?? e.lastLocation?.address?.countryCode}" : null,
-              title: null, 
-              subtitle: null, 
-              handle: Handle.findOne(addressAndService: Tuple2(e.invitationAcceptedHandles.first, "iMessage")) ?? Handle(address: e.invitationAcceptedHandles.first), 
-              lastUpdated: e.lastLocation?.timestamp != null ? DateTime.fromMillisecondsSinceEpoch(e.lastLocation!.timestamp) : null,
-              status: null, 
-              locatingInProgress: false,
-              id: e.id,
-            )
-          )
-          .toList()
-          .cast<FindMyFriend>();
+      friends = [];
+      for (final e in following) {
+        final loc = e.lastLocation;
+        // Legacy (iOS 12) friend locations arrive with a server-provided `address` inline.
+        // Secure-location (iOS 15+) friends arrive as raw coordinates only (address == null) —
+        // Apple geocodes those on-device, so we reverse-geocode client-side to fill in the
+        // list subtitle, mirroring the beacon path above. The map marker only needs lat/lon
+        // and is unaffected. Cached by (lat,long) in the shared `cachedAddresses` map.
+        String? longAddress = loc?.address?.formattedAddressLines?.join("\n");
+        String? shortAddress = loc?.address != null
+            ? "${loc?.address?.locality}, ${loc?.address?.stateCode ?? loc?.address?.countryCode}"
+            : null;
+        if (shortAddress == null && loc != null && loc.latitude != 0 && loc.longitude != 0) {
+          final key = (loc.latitude, loc.longitude);
+          Address? resolved = cachedAddresses[key];
+          if (resolved == null) {
+            try {
+              final placemark = await pushService.reverseGeocode(loc.latitude, loc.longitude);
+              if (placemark != null) {
+                resolved = Address(
+                  subAdministrativeArea: placemark.subAdministrativeArea,
+                  label: placemark.thoroughfare ?? placemark.name,
+                  streetAddress: placemark.thoroughfare,
+                  country: placemark.country,
+                  countryCode: placemark.isoCountryCode,
+                  administrativeArea: placemark.administrativeArea,
+                  streetName: placemark.thoroughfare,
+                  formattedAddressLines: [
+                    if (placemark.thoroughfare != null) placemark.thoroughfare!,
+                    if (placemark.locality != null) placemark.locality!,
+                    if (placemark.administrativeArea != null) placemark.administrativeArea!,
+                  ],
+                  locality: placemark.locality,
+                  stateCode: placemark.administrativeArea?.substring(0, 2).toUpperCase(),
+                  mapItemFullAddress: null,
+                  fullThroroughfare: null,
+                  areaOfInterest: [],
+                );
+                cachedAddresses[key] = resolved;
+              }
+            } catch (e, s) {
+              Logger.warn("Friend geocoding failed", error: e, trace: s);
+            }
+          }
+          if (resolved != null) {
+            longAddress = resolved.formattedAddressLines.join("\n");
+            shortAddress = "${resolved.locality}, ${resolved.stateCode ?? resolved.countryCode}";
+          }
+        }
+        friends.add(FindMyFriend(
+          latitude: loc?.latitude,
+          longitude: loc?.longitude,
+          longAddress: longAddress,
+          shortAddress: shortAddress,
+          title: null,
+          subtitle: null,
+          handle: Handle.findOne(addressAndService: Tuple2(e.invitationAcceptedHandles.first, "iMessage")) ?? Handle(address: e.invitationAcceptedHandles.first),
+          lastUpdated: e.lastLocation?.timestamp != null ? DateTime.fromMillisecondsSinceEpoch(e.lastLocation!.timestamp) : null,
+          status: null,
+          locatingInProgress: false,
+          id: e.id,
+        ));
+      }
 
       friendsWithLocation = friends.where((item) => (item.latitude ?? 0) != 0 && (item.longitude ?? 0) != 0).toList();
       friendsWithoutLocation = friends.where((item) => (item.latitude ?? 0) == 0 && (item.longitude ?? 0) == 0).toList();
@@ -201,6 +318,8 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
       setState(() {
         fetching2 = false;
         refreshing2 = false;
+        friendsError = null;
+        friendsStale = false;
       });
       if (widget.defaultFriend != null) {
         var friend = friends.firstWhereOrNull((friend) => friend.id == widget.defaultFriend);
@@ -211,7 +330,7 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
           }
           await completer.future;
 
-          await api.selectFriend(config: pushService.state!.osConfig, client: fmfClient!, friend: friend.id);
+          await api.selectBackgroundFriend(fmfd: pushService.state!.icloudServices!.fmfd!, friend: friend.id);
 
 
           if (friend.latitude != null) {
@@ -226,24 +345,39 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
       }
     } catch (e, s) {
       Logger.error("Failed to parse FindMy Friends location data!", error: e, trace: s);
+      // Don't throw away friends we already loaded successfully. A transient
+      // relay/token blip should degrade to "stale" rather than blanking the
+      // list — only a genuine cold start (nothing cached) shows the error.
       setState(() {
-        fetching2 = null;
+        friendsError = _describeFindMyError(e);
+        if (friends.isNotEmpty) {
+          friendsStale = true;
+          fetching2 = false;
+        } else {
+          fetching2 = null;
+        }
         refreshing2 = false;
       });
       return;
     }
 
     var isNewi = fmipClient == null;
-    fmipClient ??= await api.makeFindMyPhone(
-      config: pushService.state!.osConfig,
-      path: pushService.statePath,
-      aps: pushService.state!.conn,
-      anisette: pushService.state!.anisette,
-      provider: pushService.state!.icloudServices!.tokenProvider,
-    );
-
 
     try {
+      // NOTE: makeFindMyPhone used to be called outside this try. Its constructor
+      // runs initClient, which needs an MME token and therefore the relay — so on a
+      // cold start with the relay offline it threw, the exception escaped this whole
+      // method, and the devices tab was left on `fetching == true` forever (a
+      // permanent "Getting FindMy data..." spinner). Constructing inside the try
+      // means that failure is reported like any other.
+      fmipClient ??= await api.makeFindMyPhone(
+        config: pushService.state!.osConfig,
+        path: pushService.statePath,
+        aps: pushService.state!.conn,
+        anisette: pushService.state!.anisette,
+        provider: pushService.state!.icloudServices!.tokenProvider,
+      );
+
       if (refreshDevices && !isNewi) {
         await api.refreshDevices(config: pushService.state!.osConfig, client: fmipClient!);
       }
@@ -479,11 +613,22 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
       setState(() {
         fetching = false;
         refreshing = false;
+        devicesError = null;
+        devicesStale = false;
       });
     } catch (e, s) {
       Logger.error("Failed to parse FindMy Devices location data!", error: e, trace: s);
+      // Same policy as the friends tab: keep the last known device list rather
+      // than discarding it. Previously any refresh failure set fetching = null,
+      // which blanked an already-populated list.
       setState(() {
-        fetching = null;
+        devicesError = _describeFindMyError(e);
+        if (devices.isNotEmpty) {
+          devicesStale = true;
+          fetching = false;
+        } else {
+          fetching = null;
+        }
         refreshing = false;
       });
       return;
@@ -630,16 +775,55 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
                       padding: const EdgeInsets.all(8.0),
                       child: Text(
                         fetching == null
-                            ? "Something went wrong!"
+                            ? (devicesError ?? "Something went wrong!")
                             : fetching == false
                                 ? "You have no devices."
                                 : "Getting FindMy data...",
+                        textAlign: TextAlign.center,
                         style: context.theme.textTheme.labelLarge,
                       ),
                     ),
                     if (fetching == true) buildProgressIndicator(context, size: 15),
+                    // The error state used to be terminal — no way to recover without
+                    // backing out of the page and re-entering. Offer a retry in place.
+                    if (fetching == null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: TextButton(
+                          onPressed: refreshing
+                              ? null
+                              : () {
+                                  setState(() {
+                                    refreshing = true;
+                                    fetching = true;
+                                  });
+                                  getLocations(refreshDevices: true, refreshFriends: false);
+                                },
+                          child: Text(refreshing ? "Retrying..." : "Retry"),
+                        ),
+                      ),
                   ],
                 ),
+              ),
+            ),
+          // Serving a cached device list because the latest refresh failed.
+          if (devicesStale && devices.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(iOS ? CupertinoIcons.exclamationmark_circle : Icons.warning_amber,
+                      size: 16, color: context.theme.colorScheme.outline),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      devicesError == null
+                          ? "Showing last known locations — couldn't refresh."
+                          : "Showing last known locations. ${devicesError!.replaceAll("\n", " ")}",
+                      style: context.theme.textTheme.bodySmall!.copyWith(color: context.theme.colorScheme.outline),
+                    ),
+                  ),
+                ],
               ),
             ),
           if (devicesWithLocation.isNotEmpty)
@@ -983,16 +1167,53 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
                       padding: const EdgeInsets.all(8.0),
                       child: Text(
                         fetching2 == null
-                            ? "Something went wrong!"
+                            ? (friendsError ?? "Something went wrong!")
                             : fetching2 == false
                                 ? "You have no friends."
                                 : "Getting FindMy data...",
+                        textAlign: TextAlign.center,
                         style: context.theme.textTheme.labelLarge,
                       ),
                     ),
                     if (fetching2 == true) buildProgressIndicator(context, size: 15),
+                    if (fetching2 == null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: TextButton(
+                          onPressed: refreshing2
+                              ? null
+                              : () {
+                                  setState(() {
+                                    refreshing2 = true;
+                                    fetching2 = true;
+                                  });
+                                  getLocations(refreshDevices: false, refreshFriends: true);
+                                },
+                          child: Text(refreshing2 ? "Retrying..." : "Retry"),
+                        ),
+                      ),
                   ],
                 ),
+              ),
+            ),
+          // Serving a cached friends list because the latest refresh failed.
+          if (friendsStale && friends.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(iOS ? CupertinoIcons.exclamationmark_circle : Icons.warning_amber,
+                      size: 16, color: context.theme.colorScheme.outline),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      friendsError == null
+                          ? "Showing last known locations — couldn't refresh."
+                          : "Showing last known locations. ${friendsError!.replaceAll("\n", " ")}",
+                      style: context.theme.textTheme.bodySmall!.copyWith(color: context.theme.colorScheme.outline),
+                    ),
+                  ),
+                ],
               ),
             ),
           if (friendsWithLocation.isNotEmpty)
@@ -1113,7 +1334,7 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
                                 title: Text(item.handle?.displayName ?? item.title ?? "Unknown Friend"),
                                 subtitle: Text(ss.settings.redactedMode.value ? "Location" : (item.longAddress ?? "No location found")),
                                 onTap: () async {
-                                  await api.selectFriend(config: pushService.state!.osConfig, client: fmfClient!, friend: item.id);
+                                  await api.selectBackgroundFriend(fmfd: pushService.state!.icloudServices!.fmfd!, friend: item.id);
                                 },
                                 onLongPress: () async {
                                   const encoder = JsonEncoder.withIndent("     ");
@@ -1740,6 +1961,80 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
     );
   }
 
+  /// Build a Google Maps web URL for copying/sharing (works in any browser on any platform).
+  String _googleMapsWebUrl(double lat, double lng) =>
+      "https://www.google.com/maps/search/?api=1&query=$lat,$lng";
+
+  /// Build a geo: intent URI for opening directly in the native map app on Android.
+  /// When a label is available, uses the `q=LAT,LNG(Label)` format which shows a named pin.
+  /// Without a label, just shows a pin at the coords.
+  String _geoIntentUrl(double lat, double lng, {String? label}) {
+    if (label != null && label.isNotEmpty) {
+      return "geo:$lat,$lng?q=$lat,$lng(${Uri.encodeComponent(label)})";
+    }
+    return "geo:$lat,$lng?q=$lat,$lng";
+  }
+
+  /// Long-press action sheet for a location popup: open in Google Maps or copy the link.
+  Future<void> _showLocationActions(double lat, double lng, {String? label}) async {
+    final webUrl = _googleMapsWebUrl(lat, lng);
+    final geoUrl = _geoIntentUrl(lat, lng, label: label);
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: context.theme.colorScheme.properSurface,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.map_outlined),
+              title: const Text("Open in Google Maps"),
+              onTap: () async {
+                Navigator.of(context).pop();
+                await launchUrl(Uri.parse(geoUrl));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy),
+              title: const Text("Copy Google Maps link"),
+              onTap: () async {
+                Navigator.of(context).pop();
+                await Clipboard.setData(ClipboardData(text: webUrl));
+                showSnackbar("Copied", "Google Maps link copied to clipboard");
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Generic popup used for the dropped pin from a received maps link.
+  Widget _mapPopup(BuildContext context, {required String title, required String subtitle, required double lat, required double lng}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5.0),
+      child: GestureDetector(
+        onLongPress: () => _showLocationActions(lat, lng, label: title),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            color: context.theme.colorScheme.properSurface.withOpacity(0.8),
+          ),
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: context.theme.textTheme.labelLarge),
+              if (!ss.settings.redactedMode.value)
+                Text(subtitle, style: context.theme.textTheme.bodySmall),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget buildMap() {
     var lastLocation = ss.settings.lastLocation.value?.split(",");
     var savedLocation = lastLocation != null ? LatLng(double.parse(lastLocation[0]), double.parse(lastLocation[1])) : const LatLng(0, 0);
@@ -1770,9 +2065,12 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
         PopupMarkerLayer(
           options: PopupMarkerLayerOptions(
             onPopupEvent: (ev, m) async {
+              // Same orphaned-marker hazard as the popup builder below: a marker can
+              // outlive its friend, and firstWhere would throw an unhandled exception
+              // out of this async callback. `friend:` is already nullable.
               final item = m.isEmpty ? null : friends
-                      .firstWhere((e) => e.latitude == m[0].point.latitude && e.longitude == m[0].point.longitude).id;
-              await api.selectFriend(config: pushService.state!.osConfig, client: fmfClient!, friend: item);
+                      .firstWhereOrNull((e) => e.latitude == m[0].point.latitude && e.longitude == m[0].point.longitude)?.id;
+              await api.selectBackgroundFriend(fmfd: pushService.state!.icloudServices!.fmfd!, friend: item);
             },
             popupController: popupController,
             markers: markers.values.toList(),
@@ -1780,12 +2078,30 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
               builder: (context, marker) {
                 final ValueKey? key = marker.key as ValueKey?;
                 if (key?.value == "current") return const SizedBox();
+                if (key?.value == "dropped-pin") {
+                  return _mapPopup(
+                    context,
+                    title: widget.initialLabel ?? "Shared Location",
+                    subtitle: "${marker.point.latitude.toStringAsFixed(5)}, ${marker.point.longitude.toStringAsFixed(5)}",
+                    lat: marker.point.latitude,
+                    lng: marker.point.longitude,
+                  );
+                }
                 if (key?.value.contains("device")) {
                   String prefix = key!.value.replaceFirst("device-", "");
-                  final item = devices.firstWhere((e) => e.id == prefix);
+                  // `markers` is only ever added to, never pruned, so a device that
+                  // disappears from a later refresh leaves an orphaned marker behind.
+                  // An unguarded firstWhere here threw "Bad state: No element" during
+                  // build, which surfaced as a render error. Render nothing instead.
+                  final item = devices.firstWhereOrNull((e) => e.id == prefix);
+                  if (item == null) return const SizedBox();
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 5.0),
-                    child: Container(
+                    child: GestureDetector(
+                      onLongPress: (item.location?.latitude != null && item.location?.longitude != null)
+                          ? () => _showLocationActions(item.location!.latitude!, item.location!.longitude!, label: item.name)
+                          : null,
+                      child: Container(
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(10),
                         color: context.theme.colorScheme.properSurface.withOpacity(0.8),
@@ -1823,13 +2139,20 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
                         ],
                       )
                     ),
+                  ),
                   );
                 } else {
                   String prefix = key!.value.replaceFirst("friend-", "");
-                  final item = friends.firstWhere((e) => e.handle?.uniqueAddressAndService == prefix);
+                  // Same orphaned-marker guard as the device branch above.
+                  final item = friends.firstWhereOrNull((e) => e.handle?.uniqueAddressAndService == prefix);
+                  if (item == null) return const SizedBox();
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 5.0),
-                    child: Container(
+                    child: GestureDetector(
+                      onLongPress: (item.latitude != null && item.longitude != null)
+                          ? () => _showLocationActions(item.latitude!, item.longitude!, label: item.handle?.displayName ?? item.title)
+                          : null,
+                      child: Container(
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(10),
                         color: context.theme.colorScheme.properSurface.withOpacity(0.8),
@@ -1848,6 +2171,7 @@ class _FindMyPageState extends OptimizedState<FindMyPage> with SingleTickerProvi
                             Text("${item.status!.name.capitalize!} Location", style: context.theme.textTheme.bodySmall),
                         ],
                       ),
+                    ),
                     ),
                   );
                 }

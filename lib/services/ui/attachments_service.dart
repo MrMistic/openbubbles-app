@@ -28,6 +28,39 @@ import 'package:video_thumbnail/video_thumbnail.dart';
 
 AttachmentsService as = Get.isRegistered<AttachmentsService>() ? Get.find<AttachmentsService>() : Get.put(AttachmentsService());
 
+/// Sniff the ISO BMFF `ftyp` major brand from the first ~32 bytes of [path].
+///
+/// HEIC/HEIF/HEICS files all start with `[size: u32 BE][ftyp][brand]` where
+/// the brand identifies the variant. Common values:
+///   `heic`/`heix` — single still HEIC
+///   `mif1`        — image item (still)
+///   `msf1`        — image *sequence* (animated, what iOS Live Stickers use)
+///   `hevc`/`hevx` — HEVC video-in-HEIF container
+///   `heim`/`heis`/`hevm`/`hevs` — multi-image / image-sequence variants
+///
+/// Returns the 4-character brand string, or null if the file is too short,
+/// not ISO BMFF, or unreadable. This is purely diagnostic — we use it to
+/// confirm what the bytes *are* regardless of what the server said the MIME
+/// was.
+Future<String?> sniffHeifBrand(String path) async {
+  try {
+    final raf = await File(path).open();
+    try {
+      final header = await raf.read(32);
+      if (header.length < 12) return null;
+      // Bytes 4..8 must be the ASCII "ftyp" box type.
+      final boxType = String.fromCharCodes(header.sublist(4, 8));
+      if (boxType != 'ftyp') return null;
+      // Bytes 8..12 are the major brand.
+      return String.fromCharCodes(header.sublist(8, 12));
+    } finally {
+      await raf.close();
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
 class AttachmentsService extends GetxService {
 
   dynamic getContent(Attachment attachment, {String? path, bool? autoDownload, Function(PlatformFile)? onComplete, bool forExtension = false}) {
@@ -271,6 +304,49 @@ class AttachmentsService extends GetxService {
   Future<void> saveAsSticker(PlatformFile file) async {
     try {
       final stickerDir = await fs.stickersDirectory;
+
+      // Animated (Live) stickers: a .heics HEIC-sequence needs the same
+      // on-disk layout the iCloud sync produces so the picker can show it —
+      // a still <base>.png thumbnail (the grid excludes bare .heics files),
+      // plus the <base>.heics animated companion the picker swaps in. Copying
+      // the .heics alone would save an invisible sticker (the current bug).
+      final lowerName = file.name.toLowerCase();
+      final isAnimated =
+          lowerName.endsWith('.heics') || lowerName.endsWith('.heifs');
+      if (isAnimated && file.path != null) {
+        final base = basenameWithoutExtension(file.name);
+        final heicsDest = join(stickerDir, '$base.heics');
+        final pngDest = join(stickerDir, '$base.png');
+
+        // 1. Save the animated source (the source of truth for playback).
+        await File(file.path!).copy(heicsDest);
+
+        // 2. Generate the still PNG thumbnail shown in the picker grid. Reuse
+        //    the HEIC decoder's still-frame path (preserves transparency).
+        final still = await convertHeicToPng(
+          sourcePath: file.path!,
+          outputPath: pngDest,
+        );
+        if (still == null) {
+          // Without a still we'd have an invisible entry; clean up and bail.
+          try { await File(heicsDest).delete(); } catch (_) {}
+          return showSnackbar('Error', 'Could not save animated sticker.');
+        }
+
+        // 3. Pre-seed the animated APNG cache if the chat renderer already
+        //    decoded one next to the source (avoids a re-decode in the picker).
+        try {
+          final srcApng = File('${file.path!}.apng');
+          if (await srcApng.exists() && await srcApng.length() > 0) {
+            await srcApng.copy('$heicsDest.apng');
+          }
+        } catch (_) {
+          // Non-fatal: the picker decodes on demand.
+        }
+
+        return showSnackbar('Success', 'Saved as sticker!');
+      }
+
       final destPath = join(stickerDir, file.name);
       if (file.path != null) {
         await File(file.path!).copy(destPath);
@@ -415,6 +491,97 @@ class AttachmentsService extends GetxService {
     return thumbnail;
   }
 
+  /// Convert a still HEIC/HEIF file to a cached PNG.
+  ///
+  /// Tries the native [HeifDecoder] (`HeifCoder` based) first because it
+  /// handles edge cases like 10-bit/HDR/non-standard subsampling that
+  /// `flutter_image_compress` has been observed to fail on (logged as
+  /// "Failed to compress HEIC!"). Falls back to `flutter_image_compress` if
+  /// the native call throws or produces no output.
+  ///
+  /// Returns the converted [File] on success, or null if both decoders fail.
+  /// On failure, any zero-byte output left behind by a partial write is
+  /// deleted so a future call doesn't read it as a 0-byte cache hit.
+  Future<File?> convertHeicToPng({
+    required String sourcePath,
+    required String outputPath,
+    int quality = 100,
+  }) async {
+    if (kIsDesktop) return null;
+    final outFile = File(outputPath);
+
+    // Validate any existing cache; previous failed conversions may have left
+    // a zero-byte file behind. Treat that as a miss and clean it up.
+    if (await outFile.exists()) {
+      bool valid = false;
+      int len = 0;
+      try {
+        len = await outFile.length();
+        valid = len > 0;
+      } catch (_) {
+        valid = false;
+      }
+      if (valid) {
+        Logger.info("[HEIC] convert: cache hit ($len bytes) at $outputPath");
+        return outFile;
+      }
+      Logger.warn("[HEIC] convert: stale 0-byte cache at $outputPath, deleting");
+      try { await outFile.delete(); } catch (_) {}
+    }
+
+    // One-time sniff so the log line shows what we're actually decoding.
+    final brand = await sniffHeifBrand(sourcePath);
+    Logger.info("[HEIC] convert: starting, source=$sourcePath brand=${brand ?? "unknown"}");
+
+    // Native HeifCoder path.
+    try {
+      await mcs.invokeMethod("decode-heif", {"file": sourcePath, "output": outputPath});
+      if (await outFile.exists()) {
+        final bytes = await outFile.length();
+        if (bytes > 0) {
+          Logger.info("[HEIC] convert: native decode-heif success, $bytes bytes");
+          return outFile;
+        }
+        Logger.warn("[HEIC] convert: native decode-heif produced 0 bytes for $sourcePath, falling back");
+        try { await outFile.delete(); } catch (_) {}
+      } else {
+        Logger.warn("[HEIC] convert: native decode-heif produced no output for $sourcePath, falling back");
+      }
+    } catch (e) {
+      Logger.warn("[HEIC] convert: native decode-heif threw for $sourcePath ($e), falling back");
+      try { if (await outFile.exists()) await outFile.delete(); } catch (_) {}
+    }
+
+    // Plugin fallback.
+    try {
+      final file = await FlutterImageCompress.compressAndGetFile(
+        sourcePath,
+        outputPath,
+        format: CompressFormat.png,
+        keepExif: true,
+        quality: quality,
+      );
+      if (file != null && await outFile.exists()) {
+        final bytes = await outFile.length();
+        if (bytes > 0) {
+          Logger.info("[HEIC] convert: plugin fallback success, $bytes bytes");
+          return outFile;
+        }
+        Logger.error("[HEIC] convert: plugin produced 0 bytes for $sourcePath");
+        try { await outFile.delete(); } catch (_) {}
+      } else {
+        Logger.error("[HEIC] convert: plugin returned null for $sourcePath");
+        try { if (await outFile.exists()) await outFile.delete(); } catch (_) {}
+      }
+    } catch (e) {
+      Logger.error("[HEIC] convert: plugin threw for $sourcePath: $e");
+      try { if (await outFile.exists()) await outFile.delete(); } catch (_) {}
+    }
+
+    Logger.error("[HEIC] convert: both decoders failed for $sourcePath, returning null");
+    return null;
+  }
+
   Future<Uint8List?> loadAndGetProperties(Attachment attachment, {bool onlyFetchData = false, String? actualPath, bool isPreview = false}) async {
     if (kIsWeb || attachment.mimeType == null || !["image", "video"].contains(attachment.mimeStart)) return null;
 
@@ -424,36 +591,100 @@ class AttachmentsService extends GetxService {
       await originalFile.create(recursive: true);
     }
 
-    // Handle getting heic and tiff images
-    if (attachment.mimeType!.contains('image/hei') && !kIsDesktop) {
-      if (await File("$filePath.png").exists()) {
-        originalFile = File("$filePath.png");
-      } else {
+    // Handle animated HEIC sequences (API 28+ only)
+    if (attachment.mimeType!.contains('image/heic-sequence') && !kIsDesktop) {
+      Logger.info("[HEIC-SEQ] attachments_service: detected image/heic-sequence, path=$filePath");
+      final apngPath = "$filePath.apng";
+      bool apngCacheValid = false;
+      if (await File(apngPath).exists()) {
         try {
-          if (onlyFetchData) {
-            return await FlutterImageCompress.compressWithFile(
-              filePath,
-              format: CompressFormat.png,
-              keepExif: true,
-              quality: isPreview ? 25 : 100,
-            );
-          } else {
-            final file = await FlutterImageCompress.compressAndGetFile(
-              filePath,
-              "$filePath.png",
-              format: CompressFormat.png,
-              keepExif: true,
-              quality: isPreview ? 25 : 100,
-            );
-
-            if (file == null) {
-              Logger.error("Failed to compress HEIC!");
-              throw Exception();
+          apngCacheValid = await File(apngPath).length() > 0;
+        } catch (_) {
+          apngCacheValid = false;
+        }
+        if (!apngCacheValid) {
+          Logger.warn("[HEIC-SEQ] attachments_service: stale 0-byte .apng cache at $apngPath, deleting");
+          try { await File(apngPath).delete(); } catch (_) {}
+        }
+      }
+      if (apngCacheValid) {
+        Logger.info("[HEIC-SEQ] attachments_service: cache hit at $apngPath");
+        originalFile = File(apngPath);
+      } else {
+        bool animatedDecoded = false;
+        // Only attempt the dual-track animated decode when the user has opted
+        // in. Default behavior is to skip straight to the still-frame fallback
+        // (HeifCoder), which preserves transparency.
+        final wantAnimated = ss.settings.liveStickerAnimateNoAlpha.value;
+        try {
+          final apiLevel = fs.androidInfo?.version.sdkInt ?? 0;
+          Logger.info("[HEIC-SEQ] attachments_service: no cache, apiLevel=$apiLevel, wantAnimated=$wantAnimated");
+          if (apiLevel >= 28 && wantAnimated) {
+            Logger.info("[HEIC-SEQ] attachments_service: invoking decode-heic-sequence (animateNoAlpha=true)");
+            final bytes = await mcs.invokeMethod("decode-heic-sequence", {
+              "file": filePath,
+              "animateNoAlpha": true,
+              "blackThreshold": ss.settings.liveStickerBlackThreshold.value,
+            });
+            if (bytes != null) {
+              Logger.info("[HEIC-SEQ] attachments_service: decode success, ${bytes.length} bytes, caching to $apngPath");
+              await File(apngPath).writeAsBytes(bytes);
+              originalFile = File(apngPath);
+              animatedDecoded = true;
+            } else {
+              Logger.warn("[HEIC-SEQ] attachments_service: decode returned null, falling back to still-frame");
             }
-  
-            originalFile = File("$filePath.png");
+          } else if (!wantAnimated) {
+            Logger.info("[HEIC-SEQ] attachments_service: liveStickerAnimateNoAlpha=false, going straight to still-frame");
+          } else {
+            Logger.info("[HEIC-SEQ] attachments_service: API < 28, skipping animated decode");
           }
-        } catch (_) {}
+        } catch (e) {
+          Logger.warn("[HEIC-SEQ] attachments_service: decode failed: $e, falling back to still-frame");
+        }
+
+        if (!animatedDecoded) {
+          // Still-frame fallback via HeifCoder. This decodes the primary
+          // still item (with proper alpha compositing from the meta box's
+          // auxC reference), giving the user a transparent static sticker.
+          final pngPath = "$filePath.png";
+          final converted = await convertHeicToPng(sourcePath: filePath, outputPath: pngPath);
+          if (converted != null) {
+            Logger.info("[HEIC-SEQ] attachments_service: still-frame fallback succeeded at ${converted.path}");
+            originalFile = converted;
+          } else {
+            Logger.warn("[HEIC-SEQ] attachments_service: still-frame fallback failed; will return raw .heics bytes");
+          }
+        }
+      }
+    }
+
+    // Handle getting heic and tiff images (but not heic-sequence, handled above)
+    if (attachment.mimeType!.contains('image/hei') && !attachment.mimeType!.contains('image/heic-sequence') && !kIsDesktop) {
+      final pngPath = "$filePath.png";
+
+      // For onlyFetchData callers we don't want a cache file at all; use the
+      // plugin's in-memory variant directly.
+      if (onlyFetchData) {
+        try {
+          return await FlutterImageCompress.compressWithFile(
+            filePath,
+            format: CompressFormat.png,
+            keepExif: true,
+            quality: isPreview ? 25 : 100,
+          );
+        } catch (_) {
+          return null;
+        }
+      }
+
+      final converted = await convertHeicToPng(
+        sourcePath: filePath,
+        outputPath: pngPath,
+        quality: isPreview ? 25 : 100,
+      );
+      if (converted != null) {
+        originalFile = converted;
       }
     }
 
@@ -486,6 +717,7 @@ class AttachmentsService extends GetxService {
     }
 
     Uint8List previewData = await originalFile.readAsBytes();
+    Logger.info("[HEIC-SEQ] attachments_service: returning ${previewData.length} bytes from ${originalFile.path}");
 
     if (attachment.width != null || attachment.height != null) {
       if (attachment.mimeType == "image/gif") {

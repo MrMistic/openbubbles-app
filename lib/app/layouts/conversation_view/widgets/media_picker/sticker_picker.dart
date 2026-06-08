@@ -43,6 +43,10 @@ class _StickerPickerState extends OptimizedState<StickerPicker> {
         _stickers = entities
             .whereType<File>()
             .where((f) {
+              // Exclude the animated .heics companion files: they sit next to
+              // the still PNG thumbnail (icloud_<id>.png) and are decoded to
+              // APNG lazily on-select. Showing them would duplicate the grid.
+              if (f.path.toLowerCase().endsWith('.heics')) return false;
               final mimeType = mime(f.path);
               return mimeType != null && mimeType.startsWith('image/');
             })
@@ -123,22 +127,43 @@ class _StickerPickerState extends OptimizedState<StickerPicker> {
                     controller: widget.controller,
                     onTap: () async {
                       final file = _stickers[index];
-                      final bytes = await file.readAsBytes();
-                      final name = basename(file.path);
 
-                      // Check if already selected — deselect
-                      if (widget.controller.pickedAttachments.firstWhereOrNull(
-                              (e) => e.path == file.path) !=
-                          null) {
-                        widget.controller.pickedAttachments
-                            .removeWhere((e) => e.path == file.path);
+                      // Prefer the animated .heics companion when it exists so
+                      // Live Stickers send as the original Apple HEIC-sequence
+                      // (which iOS renders as a native animated sticker). The
+                      // grid tile shows the still PNG (icloud_<id>.png); its
+                      // companion is icloud_<id>.heics next to it.
+                      File sendFile = file;
+                      final lower = file.path.toLowerCase();
+                      if (lower.endsWith('.png')) {
+                        final heicsPath =
+                            '${file.path.substring(0, file.path.length - 4)}.heics';
+                        if (await File(heicsPath).exists()) {
+                          sendFile = File(heicsPath);
+                        }
+                      }
+
+                      final bytes = await sendFile.readAsBytes();
+                      final name = basename(sendFile.path);
+
+                      // Check if already selected — deselect. Match on either
+                      // the still PNG (tile identity) or the .heics we actually
+                      // queue, so a second tap always toggles off.
+                      final existing =
+                          widget.controller.pickedAttachments.firstWhereOrNull(
+                              (e) =>
+                                  e.path == file.path || e.path == sendFile.path);
+                      if (existing != null) {
+                        widget.controller.pickedAttachments.removeWhere(
+                            (e) =>
+                                e.path == file.path || e.path == sendFile.path);
                         // Clear sticker flag if no attachments remain
                         if (widget.controller.pickedAttachments.isEmpty) {
                           widget.controller.isStickerSend = false;
                         }
                       } else {
                         widget.controller.pickedAttachments.add(PlatformFile(
-                          path: file.path,
+                          path: sendFile.path,
                           name: name,
                           size: bytes.length,
                         ));
@@ -198,8 +223,56 @@ class _StickerPickerFileState extends OptimizedState<_StickerPickerFile>
         image = await widget.file.readAsBytes();
       }
       setState(() {});
+
+      // If this sticker has an animated (.heics) companion and Live Stickers
+      // are enabled, decode/load the animated APNG in the background and swap
+      // it in once ready. The still image above is shown immediately so the
+      // grid never blocks or flashes blank while decoding.
+      _swapInAnimated(path);
     } catch (e) {
       Logger.error('Failed to load sticker thumbnail', error: e);
+    }
+  }
+
+  /// If [stillPath] (icloud_<id>.png) has an animated .heics companion and Live
+  /// Stickers are enabled, decode/load the animated APNG (caching on first use
+  /// via the same native pipeline as chat Live Stickers) and swap it into the
+  /// thumbnail. No-op when there's no animated version, the setting is off, or
+  /// the platform can't decode it — the still image already shown remains.
+  Future<void> _swapInAnimated(String stillPath) async {
+    try {
+      if (kIsDesktop) return;
+      if (!ss.settings.liveStickerAnimateNoAlpha.value) return;
+      if ((fs.androidInfo?.version.sdkInt ?? 0) < 28) return;
+      if (!stillPath.toLowerCase().endsWith('.png')) return;
+
+      final heicsPath = '${stillPath.substring(0, stillPath.length - 4)}.heics';
+      if (!await File(heicsPath).exists()) return;
+
+      final apngFile = File('$heicsPath.apng');
+      Uint8List? animated;
+
+      // Use the cached APNG if we already decoded it, else decode once.
+      if (await apngFile.exists() && await apngFile.length() > 0) {
+        animated = await apngFile.readAsBytes();
+      } else {
+        final decoded = await mcs.invokeMethod("decode-heic-sequence", {
+          "file": heicsPath,
+          "animateNoAlpha": true,
+          "blackThreshold": ss.settings.liveStickerBlackThreshold.value,
+        });
+        if (decoded is Uint8List && decoded.isNotEmpty) {
+          await apngFile.writeAsBytes(decoded);
+          animated = decoded;
+        }
+      }
+
+      if (animated != null && mounted) {
+        image = animated;
+        setState(() {});
+      }
+    } catch (e) {
+      Logger.warn('Animated sticker decode failed: $e', tag: 'StickerPicker');
     }
   }
 
@@ -207,8 +280,14 @@ class _StickerPickerFileState extends OptimizedState<_StickerPickerFile>
   Widget build(BuildContext context) {
     super.build(context);
     return Obx(() {
-      bool containsThis = widget.controller.pickedAttachments
-              .firstWhereOrNull((e) => e.path == widget.file.path) !=
+      // The tile may have queued its animated .heics companion instead of the
+      // still PNG, so match on either path for the selection indicator.
+      final stillPath = widget.file.path;
+      final heicsPath = stillPath.toLowerCase().endsWith('.png')
+          ? '${stillPath.substring(0, stillPath.length - 4)}.heics'
+          : null;
+      bool containsThis = widget.controller.pickedAttachments.firstWhereOrNull(
+              (e) => e.path == stillPath || e.path == heicsPath) !=
           null;
       return AnimatedContainer(
         duration: const Duration(milliseconds: 250),
@@ -226,7 +305,10 @@ class _StickerPickerFileState extends OptimizedState<_StickerPickerFile>
               if (image != null)
                 Image.memory(
                   image!,
-                  fit: BoxFit.cover,
+                  // Use contain (not cover) so the whole sticker fits inside
+                  // the tile. cover fills the square and crops the overflow,
+                  // clipping non-square stickers at the edges.
+                  fit: BoxFit.contain,
                   width: 150,
                   height: 150,
                   cacheWidth: 300,

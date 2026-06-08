@@ -13,11 +13,13 @@ class MessagePart {
     this.annotations = const [],
     this.isUnsent = false,
     this.edits = const [],
+    this.attachmentPartMap = const [],
     required this.part,
   }) {
     if (attachments.isEmpty) attachments = [];
     if (annotations.isEmpty) annotations = [];
     if (edits.isEmpty) edits = [];
+    if (attachmentPartMap.isEmpty) attachmentPartMap = [];
   }
 
   String? subject;
@@ -43,6 +45,19 @@ class MessagePart {
   bool isUnsent;
   List<MessagePart> edits;
   int part;
+  /// For carousel parts that merge multiple image-only parts into one display
+  /// part, this list records the original iMessage part index per attachment
+  /// (parallel to [attachments]). Empty for non-carousel parts. Used to target
+  /// reactions/replies at the specific image the user is viewing.
+  List<int> attachmentPartMap;
+
+  /// Look up the original part index for the attachment at [carouselIndex].
+  /// Falls back to [part] for non-carousel parts or out-of-range indices.
+  int partForCarouselIndex(int carouselIndex) {
+    if (attachmentPartMap.isEmpty) return part;
+    if (carouselIndex < 0 || carouselIndex >= attachmentPartMap.length) return part;
+    return attachmentPartMap[carouselIndex];
+  }
 
   bool get isEdited => edits.isNotEmpty;
   String? get url => text?.replaceAll("\n", " ").split(" ").firstWhereOrNull((String e) => e.hasUrl);

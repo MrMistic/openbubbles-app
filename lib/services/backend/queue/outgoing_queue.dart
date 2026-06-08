@@ -21,6 +21,8 @@ class OutgoingQueue extends Queue {
         return await ah.prepMessage(item.chat, item.message, item.selected, item.reaction, clearNotificationsIfFromMe: !(item.customArgs?['notifReply'] ?? false));
       case QueueType.sendAttachment:
         return await ah.prepAttachment(item.chat, item.message);
+      case QueueType.sendMultiAttachment:
+        return await ah.prepMultiAttachment(item.chat, item.message);
       default:
         Logger.info("Unhandled queue event: ${item.type.name}");
         break;
@@ -63,6 +65,9 @@ class OutgoingQueue extends Queue {
         break;
       case QueueType.sendAttachment:
         await handleSend(() => ah.sendAttachment(item.chat, item.message, item.customArgs?['audio'] ?? false), item.chat);
+        break;
+      case QueueType.sendMultiAttachment:
+        await handleSend(() => ah.sendMultiAttachment(item.chat, item.message, item.customArgs?['audio'] ?? false), item.chat);
         break;
       default:
         Logger.info("Unhandled queue event: ${item.type.name}");

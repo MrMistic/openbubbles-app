@@ -80,6 +80,13 @@ class ConversationTextFieldState extends CustomState<ConversationTextField, void
 
   final proxyController = TextEditingController();
 
+  // Stored listener references so we can remove them in dispose() without creating
+  // new closure instances (removeListener requires the same function reference as addListener).
+  late final VoidCallback _focusListenerMain = () => focusListener(false);
+  late final VoidCallback _focusListenerSubject = () => focusListener(true);
+  late final VoidCallback _textListenerMain = () => textListener(false);
+  late final VoidCallback _textListenerSubject = () => textListener(true);
+
   @override
   void initState() {
     super.initState();
@@ -99,11 +106,11 @@ class ConversationTextFieldState extends CustomState<ConversationTextField, void
       });
     }
 
-    controller.focusNode.addListener(() => focusListener(false));
-    controller.subjectFocusNode.addListener(() => focusListener(true));
+    controller.focusNode.addListener(_focusListenerMain);
+    controller.subjectFocusNode.addListener(_focusListenerSubject);
 
-    controller.textController.addListener(() => textListener(false));
-    controller.subjectTextController.addListener(() => textListener(true));
+    controller.textController.addListener(_textListenerMain);
+    controller.subjectTextController.addListener(_textListenerSubject);
 
     if (kIsDesktop || kIsWeb) {
       proxyController.addListener(() {
@@ -295,10 +302,15 @@ class ConversationTextFieldState extends CustomState<ConversationTextField, void
     chat.textFieldAttachments = controller.pickedAttachments.where((e) => e.path != null).map((e) => e.path!).toList();
     chat.save(updateTextFieldText: true, updateTextFieldAnnotations: true, updateTextFieldAttachments: true);
 
-    controller.focusNode.dispose();
-    controller.subjectFocusNode.dispose();
-    controller.textController.dispose();
-    controller.subjectTextController.dispose();
+    // Remove listeners we attached in initState — but do NOT dispose the focusNode/textController
+    // here. They're owned by the ConversationViewController (a GetX controller that can outlive
+    // this widget across quick navigation transitions). Disposing them here caused "FocusNode was
+    // used after being disposed" errors when a new widget instance tried to attach to the same
+    // controller. The controller's own onClose handles final disposal.
+    controller.focusNode.removeListener(_focusListenerMain);
+    controller.subjectFocusNode.removeListener(_focusListenerSubject);
+    controller.textController.removeListener(_textListenerMain);
+    controller.subjectTextController.removeListener(_textListenerSubject);
     recorderController?.dispose();
     if (chat.autoSendTypingIndicators ?? ss.settings.privateSendTypingIndicators.value) {
       backend.stoppedTyping(chat);

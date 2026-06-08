@@ -563,6 +563,17 @@ Future<List<SharedAlbum>> subscribeToken(
         required String token}) =>
     RustLib.instance.api.crateApiApiSubscribeToken(lock: lock, token: token);
 
+Future<String> createAlbum(
+        {required SyncManagerDefaultAnisetteProviderMyFilePackager lock,
+        required String name,
+        required bool allowContributions,
+        required List<String> invitees}) =>
+    RustLib.instance.api.crateApiApiCreateAlbum(
+        lock: lock,
+        name: name,
+        allowContributions: allowContributions,
+        invitees: invitees);
+
 Future<List<SharedAlbum>> addAlbum(
         {required SyncManagerDefaultAnisetteProviderMyFilePackager lock,
         required String guid,
@@ -852,11 +863,160 @@ Future<List<Follow>> selectFriend(
     RustLib.instance.api.crateApiApiSelectFriend(
         config: config, client: client, friend: friend);
 
+/// Post the device's current GPS coordinates to Apple's FMF server.
+/// This makes the OB device appear as a trackable location on friends' Find My maps.
+Future<void> postMyLocation(
+        {required JoinedOsConfig config,
+        required FindMyFriendsClientDefaultAnisetteProvider client,
+        required double latitude,
+        required double longitude,
+        required double altitude,
+        required double horizontalAccuracy,
+        required double verticalAccuracy}) =>
+    RustLib.instance.api.crateApiApiPostMyLocation(
+        config: config,
+        client: client,
+        latitude: latitude,
+        longitude: longitude,
+        altitude: altitude,
+        horizontalAccuracy: horizontalAccuracy,
+        verticalAccuracy: verticalAccuracy);
+
 Future<List<Follow>> selectBackgroundFriend(
         {required ArcFindMyClientDefaultAnisetteProvider fmfd,
         String? friend}) =>
     RustLib.instance.api
         .crateApiApiSelectBackgroundFriend(fmfd: fmfd, friend: friend);
+
+/// Submit own device location via the SearchParty /findmyservice/v2/submit endpoint.
+/// This is the correct mechanism for publishing location to friends (not refreshClient).
+Future<void> submitOwnLocation(
+        {required ArcFindMyClientDefaultAnisetteProvider fmfd,
+        required double latitude,
+        required double longitude,
+        required double altitude,
+        required double horizontalAccuracy}) =>
+    RustLib.instance.api.crateApiApiSubmitOwnLocation(
+        fmfd: fmfd,
+        latitude: latitude,
+        longitude: longitude,
+        altitude: altitude,
+        horizontalAccuracy: horizontalAccuracy);
+
+/// Publish location via the modern secure-locations channel (People surface).
+///
+/// This is the correct mechanism for appearing under "People" in friends' Find My.
+/// Uses ECIES (P-224 + ANSI X9.63 KDF + AES-128-GCM-KDFIV) with the publisher's
+/// own pubkey as the recipient (broadcast model — friends decrypt with the
+/// per-friend shared key established during the MappingPacket exchange).
+///
+/// The crypto is verified bidirectionally against `Security.framework`. See
+/// `tools/findmy-capture/INVESTIGATION.md` §29-31.
+///
+/// Currently uses a hardcoded captured pubkey (the capture account's
+/// secure-locations key, sourced from the iPhone 6s Frida rig — distinct from
+/// the iPhone 6 validation-data relay, which has no Apple ID). Production use
+/// requires generating + registering a per-account keypair via CloudKit; see
+/// INVESTIGATION.md §32 for options.
+Future<void> publishSecureLocation(
+        {required ArcFindMyClientDefaultAnisetteProvider fmfd,
+        required double latitude,
+        required double longitude,
+        required double altitude,
+        required double horizontalAccuracy,
+        required double verticalAccuracy,
+        required double speed,
+        required double course}) =>
+    RustLib.instance.api.crateApiApiPublishSecureLocation(
+        fmfd: fmfd,
+        latitude: latitude,
+        longitude: longitude,
+        altitude: altitude,
+        horizontalAccuracy: horizontalAccuracy,
+        verticalAccuracy: verticalAccuracy,
+        speed: speed,
+        course: course);
+
+/// Test: send a MappingPacket to the first follower to verify the IDS delivery
+/// and Apple's import endpoint acceptance. Returns a descriptive result string.
+Future<String> testSendMappingPacket(
+        {required ArcFindMyClientDefaultAnisetteProvider fmfd}) =>
+    RustLib.instance.api.crateApiApiTestSendMappingPacket(fmfd: fmfd);
+
+/// Test: attempt the fmip `identityV5` device registration so our device gets a
+/// `deviceDiscoveryId` and can become the account `meDeviceId` (upstream gate for
+/// FindMy People publish — see IDENTITYV5_PLAN.md). Returns a descriptive result
+/// string. On configs without a relay fmip-signing bridge this reports
+/// "unsupported" and sends nothing.
+Future<String> testRegisterIdentityV5(
+        {required ArcFindMyClientDefaultAnisetteProvider fmfd}) =>
+    RustLib.instance.api.crateApiApiTestRegisterIdentityV5(fmfd: fmfd);
+
+/// READ-ONLY diagnostic: probe the relay's fmip bridge (PCRT + hardware descriptor)
+/// and log the results, to verify Task 2's low-risk half without submitting anything
+/// to Apple. See IDENTITYV5_PLAN.md verification procedure.
+Future<String> testProbeFmipBridge(
+        {required ArcFindMyClientDefaultAnisetteProvider fmfd}) =>
+    RustLib.instance.api.crateApiApiTestProbeFmipBridge(fmfd: fmfd);
+
+/// TEMPORARY diagnostic: exercise the relay `fmip-sign` bridge command with a dummy
+/// 32-byte digest to reveal the HTTP-body -> websocket-`data` wire shape (piece-1
+/// audit Issue A). Signs nothing real and does not mutate account state. Read the
+/// relay-side DIAG echo from the [FMF-IDV5] log after deploying the ffb239d relay .deb.
+Future<String> testProbeFmipSign(
+        {required ArcFindMyClientDefaultAnisetteProvider fmfd}) =>
+    RustLib.instance.api.crateApiApiTestProbeFmipSign(fmfd: fmfd);
+
+/// Invite a friend to share their location with us.
+Future<void> fmfInviteFriend(
+        {required JoinedOsConfig config,
+        required ArcFindMyClientDefaultAnisetteProvider fmfd,
+        required String handle}) =>
+    RustLib.instance.api
+        .crateApiApiFmfInviteFriend(config: config, fmfd: fmfd, handle: handle);
+
+/// Stop sharing our location with specific friends.
+Future<void> fmfStopSharing(
+        {required JoinedOsConfig config,
+        required ArcFindMyClientDefaultAnisetteProvider fmfd,
+        required List<String> handles}) =>
+    RustLib.instance.api.crateApiApiFmfStopSharing(
+        config: config, fmfd: fmfd, handles: handles);
+
+/// Start sharing our location with a single friend.
+/// Calls offerLocation for this handle, then relays the mapping packet token via IDS.
+Future<void> fmfOfferLocationSingle(
+        {required JoinedOsConfig config,
+        required ArcFindMyClientDefaultAnisetteProvider fmfd,
+        required String handle}) =>
+    RustLib.instance.api.crateApiApiFmfOfferLocationSingle(
+        config: config, fmfd: fmfd, handle: handle);
+
+/// Get the list of followers (people who can see our location) and following (people whose location we can see).
+/// Returns (followers_handles, following_handles).
+Future<(List<String>, List<String>)> fmfGetSharingState(
+        {required JoinedOsConfig config,
+        required ArcFindMyClientDefaultAnisetteProvider fmfd}) =>
+    RustLib.instance.api
+        .crateApiApiFmfGetSharingState(config: config, fmfd: fmfd);
+
+/// Post location via the background daemon client (preferred — daemon mode is required for posting).
+Future<void> postMyLocationBackground(
+        {required JoinedOsConfig config,
+        required ArcFindMyClientDefaultAnisetteProvider fmfd,
+        required double latitude,
+        required double longitude,
+        required double altitude,
+        required double horizontalAccuracy,
+        required double verticalAccuracy}) =>
+    RustLib.instance.api.crateApiApiPostMyLocationBackground(
+        config: config,
+        fmfd: fmfd,
+        latitude: latitude,
+        longitude: longitude,
+        altitude: altitude,
+        horizontalAccuracy: horizontalAccuracy,
+        verticalAccuracy: verticalAccuracy);
 
 Future<List<Follow>> getBackgroundFollowing(
         {required ArcFindMyClientDefaultAnisetteProvider fmfd}) =>
@@ -1198,6 +1358,77 @@ Future<List<PrivateDeviceInfo>> getSmsTargets(
         required bool refresh}) =>
     RustLib.instance.api.crateApiApiGetSmsTargets(
         state: state, handle: handle, refresh: refresh);
+
+/// Sync notes from CloudKit private database. Returns JSON string:
+/// { "token": <base64 | null>, "folders": [...], "notes": [...], "media_map": {...} }
+Future<String> fetchNotesJson(
+        {required ArcCloudKitClientDefaultAnisetteProvider cloudkit,
+        required ArcKeychainClientDefaultAnisetteProvider keychain,
+        Uint8List? continuationToken}) =>
+    RustLib.instance.api.crateApiApiFetchNotesJson(
+        cloudkit: cloudkit,
+        keychain: keychain,
+        continuationToken: continuationToken);
+
+/// Parse raw note data bytes into formatted content with attachments and tables.
+Future<String> parseNoteJson({required List<int> data}) =>
+    RustLib.instance.api.crateApiApiParseNoteJson(data: data);
+
+/// Download attachment asset data from CloudKit. Returns raw image bytes.
+/// `media_map_json` is the serialized AttachmentMediaMap from a previous sync_notes call.
+Future<Uint8List> fetchAttachmentData(
+        {required ArcCloudKitClientDefaultAnisetteProvider cloudkit,
+        required ArcKeychainClientDefaultAnisetteProvider keychain,
+        required String attachmentIdentifier}) =>
+    RustLib.instance.api.crateApiApiFetchAttachmentData(
+        cloudkit: cloudkit,
+        keychain: keychain,
+        attachmentIdentifier: attachmentIdentifier);
+
+/// Download attachment asset data from CloudKit with media map context.
+Future<Uint8List> fetchAttachmentDataWithMap(
+        {required ArcCloudKitClientDefaultAnisetteProvider cloudkit,
+        required ArcKeychainClientDefaultAnisetteProvider keychain,
+        required String attachmentIdentifier,
+        String? mediaMapJson}) =>
+    RustLib.instance.api.crateApiApiFetchAttachmentDataWithMap(
+        cloudkit: cloudkit,
+        keychain: keychain,
+        attachmentIdentifier: attachmentIdentifier,
+        mediaMapJson: mediaMapJson);
+
+/// Sync shared notes from CloudKit shared database. Returns JSON string:
+/// { "token": <base64 | null>, "folders": [...], "notes": [...] }
+Future<String> fetchSharedNotesJson(
+        {required ArcCloudKitClientDefaultAnisetteProvider cloudkit,
+        required ArcKeychainClientDefaultAnisetteProvider keychain,
+        Uint8List? continuationToken}) =>
+    RustLib.instance.api.crateApiApiFetchSharedNotesJson(
+        cloudkit: cloudkit,
+        keychain: keychain,
+        continuationToken: continuationToken);
+
+/// Diagnostic: dump all keychain zones and their items' pcsservice IDs to logs.
+/// Used to discover the correct PCSService.r#type for the Notes service.
+/// Check the OB logs after calling this for "=== KEYCHAIN DIAGNOSTICS ===" sections.
+Future<void> dumpNotesKeychainDiagnostics(
+        {required ArcKeychainClientDefaultAnisetteProvider keychain}) =>
+    RustLib.instance.api
+        .crateApiApiDumpNotesKeychainDiagnostics(keychain: keychain);
+
+/// Incrementally fetch stickers from iCloud. Pass the `continuation_token`
+/// persisted from the previous sync (hex string), or None for a full initial
+/// sync. Returns a JSON string containing the new token (hex), the changed
+/// stickers with base64 image data, and the ids of deleted records.
+/// Logs progress at INFO level under "[STICKER-SYNC]".
+Future<String> fetchIcloudStickers(
+        {required ArcCloudKitClientDefaultAnisetteProvider cloudkit,
+        required ArcKeychainClientDefaultAnisetteProvider keychain,
+        String? continuationToken}) =>
+    RustLib.instance.api.crateApiApiFetchIcloudStickers(
+        cloudkit: cloudkit,
+        keychain: keychain,
+        continuationToken: continuationToken);
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<APSWatcher>>
 abstract class ApsWatcher implements RustOpaqueInterface {}
@@ -4287,6 +4518,17 @@ sealed class PartExtension with _$PartExtension {
     required PlatformInt64 effectType,
     required String stickerId,
   }) = PartExtension_Sticker;
+
+  /// Standalone sticker send (a sticker sent as a new message, not placed on
+  /// an existing message). Carries the minimal sticker user-info the
+  /// recipient uses to classify the attachment as a sticker
+  /// (sid/shash/stickerEffectType + pid), but NONE of the positioning
+  /// attributes. Also drives `message-part` omission on the FILE element.
+  const factory PartExtension.standaloneSticker({
+    required String stickerId,
+    required String hash,
+    required PlatformInt64 effectType,
+  }) = PartExtension_StandaloneSticker;
 }
 
 class Passkey {
@@ -5720,6 +5962,9 @@ sealed class StatusKitMessage with _$StatusKitMessage {
     String? mode,
     required bool allowed,
   }) = StatusKitMessage_StatusChanged;
+  const factory StatusKitMessage.focusSyncChanged({
+    required List<String> activeModes,
+  }) = StatusKitMessage_FocusSyncChanged;
 }
 
 class StatusKitPersonalConfig {

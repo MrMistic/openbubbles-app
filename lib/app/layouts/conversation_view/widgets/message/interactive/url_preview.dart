@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:bluebubbles/app/layouts/conversation_view/widgets/message/reply/reply_bubble.dart';
 import 'package:bluebubbles/app/wrappers/stateful_boilerplate.dart';
 import 'package:bluebubbles/helpers/helpers.dart';
+import 'package:bluebubbles/helpers/ui/apple_maps_link.dart';
 import 'package:bluebubbles/database/models.dart';
 import 'package:bluebubbles/services/services.dart';
 import 'package:collection/collection.dart';
@@ -112,8 +113,25 @@ class _UrlPreviewState extends OptimizedState<UrlPreview> with AutomaticKeepAliv
     final _data = dataOverride ?? data;
     return InkWell(
       onTap: widget.file != null && _data.url != null ? () async {
+        final url = _data.url!;
+        // Apple Maps links are useless on Android — intercept and open in the in-app map.
+        if (AppleMapsLink.isAppleMapsLink(url)) {
+          final resolved = await AppleMapsLink.resolve(url);
+          if (resolved != null) {
+            final sender = widget.message.isFromMe!
+                ? "you"
+                : (widget.message.getHandle()?.displayName ?? "a contact");
+            final label = resolved.label != null
+                ? "${resolved.label} — shared by $sender"
+                : "Shared Location from $sender";
+            if (context.mounted) {
+              await AppleMapsLink.openInFindMy(context, resolved.coords, label: label);
+            }
+            return;
+          }
+        }
         await launchUrl(
-          Uri.parse(_data.url!),
+          Uri.parse(url),
           mode: LaunchMode.externalApplication
         );
       } : null,

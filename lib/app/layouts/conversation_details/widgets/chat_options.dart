@@ -12,6 +12,7 @@ import 'package:bluebubbles/app/layouts/settings/pages/theming/avatar/avatar_cro
 import 'package:bluebubbles/database/models.dart';
 import 'package:bluebubbles/services/rustpush/rustpush_service.dart';
 import 'package:bluebubbles/services/services.dart';
+import 'package:bluebubbles/utils/logger/logger.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -644,6 +645,94 @@ class _ChatOptionsState extends OptimizedState<ChatOptions> {
                       await file.writeAsBytes(await doc.save());
                       Get.back();
                       showSnackbar("Success", "Saved transcript to the downloads folder");
+                    },
+                  ),
+                // Location sharing buttons (FMF) - conditional visibility
+                if (!kIsWeb && chat.participants.length == 1 && pushService.state?.icloudServices?.fmfd != null)
+                  FutureBuilder<(List<String>, List<String>)>(
+                    future: api.fmfGetSharingState(
+                      config: pushService.state!.osConfig,
+                      fmfd: pushService.state!.icloudServices!.fmfd!,
+                    ),
+                    builder: (context, snapshot) {
+                      if (!snapshot.hasData) return const SizedBox.shrink();
+                      final (followers, following) = snapshot.data!;
+                      final handle = chat.participants.first.address;
+                      final isFollower = followers.contains(handle);
+                      final isFollowing = following.contains(handle);
+
+                      // DIAGNOSTIC: log exactly what we're comparing so we can
+                      // diagnose the "Stop Sharing shows for non-follower" and
+                      // "Request Their Location always shows" bugs.
+                      Logger.info("[FMF-UI] chat=${chat.guid} handle=$handle "
+                          "isFollower=$isFollower isFollowing=$isFollowing "
+                          "followers=$followers following=$following");
+                      
+                      return Column(children: [
+                        // If we're NOT sharing with them → "Share My Location"
+                        // If we ARE sharing → "Stop Sharing My Location"
+                        if (!isFollower)
+                          SettingsTile(
+                            title: "Share My Location",
+                            subtitle: "Start sharing your location with this person",
+                            trailing: Padding(
+                              padding: const EdgeInsets.only(right: 15.0),
+                              child: Icon(iOS ? CupertinoIcons.location_fill : Icons.location_on),
+                            ),
+                            onTap: () async {
+                              final fmfd = pushService.state!.icloudServices!.fmfd!;
+                              final config = pushService.state!.osConfig;
+                              showSnackbar("Find My", "Sharing location with $handle...");
+                              try {
+                                await api.fmfOfferLocationSingle(config: config, fmfd: fmfd, handle: handle);
+                                showSnackbar("Find My", "Now sharing with $handle");
+                              } catch (e) {
+                                showSnackbar("Find My Error", "$e");
+                              }
+                            },
+                          ),
+                        if (isFollower)
+                          SettingsTile(
+                            title: "Stop Sharing My Location",
+                            subtitle: "Stop sharing your location with this person",
+                            trailing: Padding(
+                              padding: const EdgeInsets.only(right: 15.0),
+                              child: Icon(iOS ? CupertinoIcons.location_slash : Icons.location_off_outlined),
+                            ),
+                            onTap: () async {
+                              final fmfd = pushService.state!.icloudServices!.fmfd!;
+                              final config = pushService.state!.osConfig;
+                              showSnackbar("Find My", "Stopping sharing with $handle...");
+                              try {
+                                await api.fmfStopSharing(config: config, fmfd: fmfd, handles: [handle]);
+                                showSnackbar("Find My", "Stopped sharing with $handle");
+                              } catch (e) {
+                                showSnackbar("Find My Error", "$e");
+                              }
+                            },
+                          ),
+                        // If they're NOT sharing with us → "Request Their Location"
+                        if (!isFollowing)
+                          SettingsTile(
+                            title: "Request Their Location",
+                            subtitle: "Ask this person to share their location with you",
+                            trailing: Padding(
+                              padding: const EdgeInsets.only(right: 15.0),
+                              child: Icon(iOS ? CupertinoIcons.location : Icons.location_on_outlined),
+                            ),
+                            onTap: () async {
+                              final fmfd = pushService.state!.icloudServices!.fmfd!;
+                              final config = pushService.state!.osConfig;
+                              showSnackbar("Find My", "Requesting location from $handle...");
+                              try {
+                                await api.fmfInviteFriend(config: config, fmfd: fmfd, handle: handle);
+                                showSnackbar("Find My", "Invite sent to $handle");
+                              } catch (e) {
+                                showSnackbar("Find My Error", "$e");
+                              }
+                            },
+                          ),
+                      ]);
                     },
                   ),
               ],

@@ -13,7 +13,6 @@ import 'package:defer_pointer/defer_pointer.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:get/get.dart';
 import 'package:universal_io/io.dart';
@@ -95,21 +94,11 @@ class ReactionWidgetState extends OptimizedState<ReactionWidget> {
       String pathName = attachment.path;
 
       // Check for HEIC and use converted PNG if available, or convert
-      if (attachment.mimeType?.contains('image/hei') == true) {
+      if (attachment.mimeType?.contains('image/hei') == true && !kIsDesktop) {
         final pngPath = "$pathName.png";
-        if (await File(pngPath).exists()) {
-          pathName = pngPath;
-        } else if (!kIsDesktop) {
-          final file = await FlutterImageCompress.compressAndGetFile(
-            pathName,
-            pngPath,
-            format: CompressFormat.png,
-            keepExif: true,
-            quality: 100,
-          );
-          if (file != null) {
-            pathName = pngPath;
-          }
+        final converted = await as.convertHeicToPng(sourcePath: pathName, outputPath: pngPath);
+        if (converted != null) {
+          pathName = converted.path;
         }
       }
 
